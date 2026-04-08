@@ -1,3 +1,11 @@
+"""
+Hand Tracking Module
+====================
+Wraps MediaPipe Hands for real-time hand landmark detection.
+Provides robust finger-up detection using angle-aware logic and
+utility helpers for palm geometry.
+"""
+
 import mediapipe as mp
 import cv2
 import numpy as np
@@ -5,8 +13,13 @@ import numpy as np
 
 class HandTracker:
     """
-    Wraps MediaPipe Hands for real-time hand landmark detection.
-    Enhanced with angle-based finger detection and multi-hand support.
+    Real-time hand landmark tracker using MediaPipe.
+
+    Features
+    --------
+    * Configurable detection / tracking confidence
+    * Angle-aware finger-up detection (handles both left and right hands)
+    * Helper methods for distance, midpoint, palm geometry
     """
 
     # MediaPipe landmark indices
@@ -32,7 +45,8 @@ class HandTracker:
     PINKY_DIP    = 19
     PINKY_TIP    = 20
 
-    def __init__(self, max_hands=1, detection_confidence=0.8, tracking_confidence=0.8):
+    def __init__(self, max_hands=1, detection_confidence=0.85,
+                 tracking_confidence=0.8):
         self.mp_hands  = mp.solutions.hands
         self.mp_draw   = mp.solutions.drawing_utils
         self.mp_styles = mp.solutions.drawing_styles
@@ -44,23 +58,34 @@ class HandTracker:
             min_tracking_confidence=tracking_confidence,
         )
 
+        # Cache the detected handedness for thumb logic
+        self._handedness = "Right"
+
     def find_hands(self, frame, draw=True):
+        """Detect hands and optionally draw skeleton overlay."""
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         rgb.flags.writeable = False
         results = self.hands.process(rgb)
         rgb.flags.writeable = True
 
-        if draw and results.multi_hand_landmarks:
-            for hand_lm in results.multi_hand_landmarks:
-                self.mp_draw.draw_landmarks(
-                    frame, hand_lm,
-                    self.mp_hands.HAND_CONNECTIONS,
-                    self.mp_styles.get_default_hand_landmarks_style(),
-                    self.mp_styles.get_default_hand_connections_style(),
-                )
+        if results.multi_hand_landmarks:
+            # Cache handedness
+            if results.multi_handedness:
+                self._handedness = results.multi_handedness[0] \
+                    .classification[0].label
+
+            if draw:
+                for hand_lm in results.multi_hand_landmarks:
+                    self.mp_draw.draw_landmarks(
+                        frame, hand_lm,
+                        self.mp_hands.HAND_CONNECTIONS,
+                        self.mp_styles.get_default_hand_landmarks_style(),
+                        self.mp_styles.get_default_hand_connections_style(),
+                    )
         return frame, results
 
     def get_landmarks(self, results, frame_shape, hand_index=0):
+        """Return pixel-space landmarks as a dict {id: (x, y)}."""
         if not results.multi_hand_landmarks:
             return None
         if hand_index >= len(results.multi_hand_landmarks):
@@ -79,24 +104,36 @@ class HandTracker:
         if hand_index >= len(results.multi_hand_landmarks):
             return None
         hand_lm = results.multi_hand_landmarks[hand_index]
-        return {idx: (lm.x, lm.y, lm.z) for idx, lm in enumerate(hand_lm.landmark)}
+        return {idx: (lm.x, lm.y, lm.z)
+                for idx, lm in enumerate(hand_lm.landmark)}
 
     def fingers_up(self, landmarks):
         """
         Returns [thumb, index, middle, ring, pinky] booleans.
-        Uses both Y-axis and angle for more robust detection.
+
+        Thumb uses **handedness-aware X-axis comparison** so it works
+        correctly for both left and right hands (after mirror flip).
+        Other fingers use Y-axis (tip above PIP *and* MCP).
         """
         if landmarks is None:
             return [False] * 5
 
-        tips = [self.THUMB_TIP, self.INDEX_TIP, self.MIDDLE_TIP, self.RING_TIP, self.PINKY_TIP]
-        pips = [self.THUMB_IP,  self.INDEX_PIP, self.MIDDLE_PIP, self.RING_PIP, self.PINKY_PIP]
-        mcps = [self.THUMB_MCP, self.INDEX_MCP, self.MIDDLE_MCP, self.RING_MCP, self.PINKY_MCP]
+        tips = [self.THUMB_TIP, self.INDEX_TIP, self.MIDDLE_TIP,
+                self.RING_TIP, self.PINKY_TIP]
+        pips = [self.THUMB_IP,  self.INDEX_PIP, self.MIDDLE_PIP,
+                self.RING_PIP, self.PINKY_PIP]
+        mcps = [self.THUMB_MCP, self.INDEX_MCP, self.MIDDLE_MCP,
+                self.RING_MCP, self.PINKY_MCP]
 
         up = []
         for i, (tip_id, pip_id, mcp_id) in enumerate(zip(tips, pips, mcps)):
-            if i == 0:  # Thumb: use X axis
-                up.append(landmarks[tip_id][0] < landmarks[pip_id][0])
+            if i == 0:  # Thumb – X axis, handedness-aware
+                # After mirror-flip: "Right" label → user's right hand
+                # appears on screen-right, thumb tip should be LEFT of IP
+                if self._handedness == "Right":
+                    up.append(landmarks[tip_id][0] < landmarks[pip_id][0])
+                else:
+                    up.append(landmarks[tip_id][0] > landmarks[pip_id][0])
             else:
                 tip_y = landmarks[tip_id][1]
                 pip_y = landmarks[pip_id][1]
@@ -110,11 +147,13 @@ class HandTracker:
         return sum(self.fingers_up(landmarks))
 
     def distance(self, landmarks, id1, id2):
+        """Euclidean distance between two landmarks."""
         x1, y1 = landmarks[id1]
         x2, y2 = landmarks[id2]
         return np.hypot(x2 - x1, y2 - y1)
 
     def midpoint(self, landmarks, id1, id2):
+        """Midpoint between two landmarks."""
         x1, y1 = landmarks[id1]
         x2, y2 = landmarks[id2]
         return ((x1 + x2) // 2, (y1 + y2) // 2)
@@ -135,3 +174,10 @@ class HandTracker:
     def palm_size(self, landmarks):
         """Returns approximate palm size (wrist to middle MCP distance)."""
         return self.distance(landmarks, self.WRIST, self.MIDDLE_MCP)
+
+    def get_hand_bbox(self, landmarks, padding=20):
+        """Return bounding box (x1, y1, x2, y2) with optional padding."""
+        xs = [pt[0] for pt in landmarks.values()]
+        ys = [pt[1] for pt in landmarks.values()]
+        return (min(xs) - padding, min(ys) - padding,
+                max(xs) + padding, max(ys) + padding)
