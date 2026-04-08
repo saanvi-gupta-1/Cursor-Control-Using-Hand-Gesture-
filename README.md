@@ -1,1 +1,1 @@
-# Cursor-Control-Using-Hand-Gesture-
+# Cursor-Control-Using-Hand-Gesture
