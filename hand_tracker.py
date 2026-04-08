@@ -1,6 +1,4 @@
 import mediapipe as mp
-from mediapipe.tasks import python
-from mediapipe.tasks.python import vision
 import cv2
 import numpy as np
 
@@ -35,6 +33,7 @@ class HandTracker:
     PINKY_TIP    = 20
 
     def __init__(self, max_hands=1, detection_confidence=0.8, tracking_confidence=0.8):
+        self.mp_hands  = mp.solutions.hands
         self.mp_draw   = mp.solutions.drawing_utils
         self.mp_styles = mp.solutions.drawing_styles
 
