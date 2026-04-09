@@ -26,13 +26,12 @@ v2 — Advanced Technologies
   🤏  Pinch (thumb+index)    → Left click
   🤏🤏 Two quick pinches      → Double click
   🤏✌  Pinch + middle up     → Right click
-  ✌️  Two fingers + move up  → Scroll up
-  ✌️  Two fingers + move dn  → Scroll down
-  🤙  Thumb + pinky spread   → Zoom in  (Ctrl ++)
-  🤙  Thumb + pinky close    → Zoom out (Ctrl --)
+  ✌️  2 fingers + move up/dn → Scroll up / down
+  🖖  3 fingers + move UP    → Zoom in  (Ctrl ++)
+  🖖  3 fingers + move DOWN  → Zoom out (Ctrl --)
   ✊  Closed fist (hold)     → Drag & drop
   🖐  Open palm (hold ~0.2s) → Screenshot
-  🖖  3 fingers up           → Pause / freeze cursor
+  🤙  Thumb + pinky (shaka)  → Pause / freeze cursor
   Q                          → Quit
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
@@ -215,7 +214,7 @@ def draw_hud(frame, gesture, paused, sx, sy, fps, dragging, log,
     cv2.rectangle(overlay2, (0, h - 28), (w, h), (10, 10, 20), -1)
     cv2.addWeighted(overlay2, 0.7, frame, 0.3, 0, frame)
     cv2.putText(frame,
-                "Q:Quit | Pinch:Click | 2-Finger:Scroll | Thumb+Pinky:Zoom | Fist:Drag | Palm:Screenshot",
+                "Q:Quit | Pinch:Click | 2-Finger:Scroll | 3-Finger:Zoom | Fist:Drag | Palm:Screenshot",
                 (6, h - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.30, (160, 160, 160), 1, cv2.LINE_AA)
 
     # Drag ring
