@@ -69,36 +69,36 @@ pyautogui.PAUSE    = 0
 
 # -- Color palette (BGR) ------------------------------------------------------
 COLORS = {
-    "move":         (0,   255, 120),
-    "click":        (0,   200, 255),
-    "double_click": (0,   120, 255),
-    "right_click":  (180,  60, 255),
-    "drag_start":   (255, 140,   0),
-    "drag_move":    (255, 180,  40),
-    "drag_end":     (255, 220, 100),
-    "scroll_up":    (100, 255, 200),
-    "scroll_down":  (100, 200, 255),
-    "zoom_in":      (0,   255, 255),
-    "zoom_out":     (0,   180, 200),
-    "screenshot":   (255, 255,   0),
-    "pause":        (80,   80, 255),
-    "none":         (160, 160, 160),
+    "move":         (240, 240, 240),
+    "click":        (230, 200, 160),
+    "double_click": (255, 180, 120),
+    "right_click":  (250, 200, 210),
+    "drag_start":   (180, 240, 180),
+    "drag_move":    (180, 240, 180),
+    "drag_end":     (150, 220, 150),
+    "scroll_up":    (250, 220, 180),
+    "scroll_down":  (250, 220, 180),
+    "zoom_in":      (180, 180, 250),
+    "zoom_out":     (180, 180, 250),
+    "screenshot":   (255, 255, 240),
+    "pause":        (120, 120, 140),
+    "none":         (100, 100, 100),
 }
 
 LABELS = {
-    "move":         "MOVE",
-    "click":        "CLICK",
-    "double_click": "DBL CLICK",
-    "right_click":  "RT CLICK",
-    "drag_start":   "DRAG START",
-    "drag_move":    "DRAGGING",
-    "drag_end":     "DRAG END",
-    "scroll_up":    "SCROLL UP",
-    "scroll_down":  "SCROLL DOWN",
-    "zoom_in":      "ZOOM IN",
-    "zoom_out":     "ZOOM OUT",
-    "screenshot":   "SCREENSHOT",
-    "pause":        "PAUSED",
+    "move":         "moving",
+    "click":        "click",
+    "double_click": "double click",
+    "right_click":  "right click",
+    "drag_start":   "drag start",
+    "drag_move":    "dragging",
+    "drag_end":     "drag end",
+    "scroll_up":    "scroll up",
+    "scroll_down":  "scroll down",
+    "zoom_in":      "zoom in",
+    "zoom_out":     "zoom out",
+    "screenshot":   "screenshot",
+    "pause":        "paused",
     "none":         "...",
 }
 
@@ -128,16 +128,16 @@ def take_screenshot():
 
 def draw_gesture_log(frame, log):
     """Draw the last N gestures as a fading sidebar."""
-    x_start = frame.shape[1] - 200
+    x_start = frame.shape[1] - 120
     for i, (g, ts) in enumerate(reversed(list(log))):
         age   = time.time() - ts
         alpha = max(0, 1.0 - age / 3.0)
         color = COLORS.get(g, (160, 160, 160))
         faded = tuple(int(c * alpha) for c in color)
-        label = LABELS.get(g, g.upper())
-        y     = 40 + i * 22
+        label = LABELS.get(g, g.lower())
+        y     = 70 + i * 20
         cv2.putText(frame, label, (x_start, y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, faded, 1, cv2.LINE_AA)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, faded, 1, cv2.LINE_AA)
 
 
 def draw_hud(frame, gesture, paused, sx, sy, fps, dragging, log,
@@ -147,85 +147,80 @@ def draw_hud(frame, gesture, paused, sx, sy, fps, dragging, log,
 
     # Top bar with dark overlay
     overlay = frame.copy()
-    for row in range(80):
-        cv2.rectangle(overlay, (0, row), (w, row + 1), (10, 10, 20), -1)
-    cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
+    for row in range(60):
+        cv2.rectangle(overlay, (0, row), (w, row + 1), (15, 15, 15), -1)
+    cv2.addWeighted(overlay, 0.4, frame, 0.6, 0, frame)
 
-    color = COLORS.get(gesture, (255, 255, 255))
-    label = LABELS.get(gesture, gesture.upper().replace("_", " "))
+    color = COLORS.get(gesture, (240, 240, 240))
+    label = LABELS.get(gesture, gesture.lower().replace("_", " "))
 
     # Gesture indicator dot
-    cv2.circle(frame, (22, 30), 8, color, -1, cv2.LINE_AA)
-    cv2.circle(frame, (22, 30), 10, (255, 255, 255), 1, cv2.LINE_AA)
+    cv2.circle(frame, (25, 25), 5, color, -1, cv2.LINE_AA)
+    cv2.circle(frame, (25, 25), 8, (255, 255, 255), 1, cv2.LINE_AA)
 
     # Gesture name
-    cv2.putText(frame, label, (40, 38),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.85, color, 2, cv2.LINE_AA)
+    cv2.putText(frame, label, (45, 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 1, cv2.LINE_AA)
 
     # Mode indicators
-    mode_y = 58
+    mode_y = 50
     if scroll_active:
-        cv2.putText(frame, "[SCROLL MODE]", (40, mode_y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 255, 200), 1, cv2.LINE_AA)
-        mode_y += 16
+        cv2.putText(frame, "scroll mode", (45, mode_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1, cv2.LINE_AA)
+        mode_y += 18
     if zoom_active:
-        cv2.putText(frame, "[ZOOM MODE]", (40, mode_y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1, cv2.LINE_AA)
-        mode_y += 16
+        cv2.putText(frame, "zoom mode", (45, mode_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1, cv2.LINE_AA)
+        mode_y += 18
 
     # Status line
     if paused:
-        cv2.putText(frame, "CURSOR FROZEN", (40, mode_y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (80, 80, 255), 1, cv2.LINE_AA)
+        cv2.putText(frame, "paused", (45, mode_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (120, 120, 140), 1, cv2.LINE_AA)
     elif dragging:
-        cv2.putText(frame, f"DRAG -> ({sx}, {sy})", (40, mode_y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 180, 40), 1, cv2.LINE_AA)
+        cv2.putText(frame, f"drag -> {sx}, {sy}", (45, mode_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 240, 180), 1, cv2.LINE_AA)
     else:
-        cv2.putText(frame, f"Cursor ({sx}, {sy})", (40, mode_y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1, cv2.LINE_AA)
+        cv2.putText(frame, f"{sx}, {sy}", (45, mode_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 180, 180), 1, cv2.LINE_AA)
 
     # FPS top-right
-    if fps >= 24:
-        fps_color = (100, 255, 100)
-    elif fps >= 15:
-        fps_color = (0, 200, 255)
-    else:
-        fps_color = (0, 80, 255)
-    cv2.putText(frame, f"FPS {fps:.0f}", (w - 95, 22),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.55, fps_color, 1, cv2.LINE_AA)
+    fps_text = f"{fps:.0f} fps"
+    cv2.putText(frame, fps_text, (w - 70, 25),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1, cv2.LINE_AA)
 
     # Filter label
-    cv2.putText(frame, "1-EURO", (w - 95, 42),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (120, 120, 200), 1, cv2.LINE_AA)
+    cv2.putText(frame, "1-euro", (w - 70, 45),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 150, 150), 1, cv2.LINE_AA)
 
     # Gesture log sidebar
     draw_gesture_log(frame, log)
 
     # Bottom help bar
     overlay2 = frame.copy()
-    cv2.rectangle(overlay2, (0, h - 28), (w, h), (10, 10, 20), -1)
-    cv2.addWeighted(overlay2, 0.7, frame, 0.3, 0, frame)
+    cv2.rectangle(overlay2, (0, h - 24), (w, h), (15, 15, 15), -1)
+    cv2.addWeighted(overlay2, 0.5, frame, 0.5, 0, frame)
     cv2.putText(frame,
-                "Q:Quit | Pinch:Click | 2-Finger:Scroll | 3-Finger:Zoom | Fist:Drag | Palm:Screenshot",
-                (6, h - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.30, (160, 160, 160), 1, cv2.LINE_AA)
+                "q: quit | pinch: click | 2-finger: scroll | 3-finger: zoom | fist: drag | palm: screenshot",
+                (10, h - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1, cv2.LINE_AA)
 
     # Drag ring
     if dragging:
         cx = int(sx * w / pyautogui.size()[0])
         cy = int(sy * h / pyautogui.size()[1])
-        cv2.circle(frame, (cx, cy), 20, (255, 140, 0), 2, cv2.LINE_AA)
-        cv2.circle(frame, (cx, cy), 24, (255, 200, 80), 1, cv2.LINE_AA)
+        drag_color = COLORS.get("drag_move", (180, 240, 180))
+        cv2.circle(frame, (cx, cy), 16, drag_color, 1, cv2.LINE_AA)
+        cv2.circle(frame, (cx, cy), 20, (255, 255, 255), 1, cv2.LINE_AA)
 
 
 def draw_cursor_dot(frame, tip, gesture):
     """Draw a dot at the finger tip with gesture-coloured ring."""
     if tip is None:
         return
-    color = COLORS.get(gesture, (255, 255, 255))
-    cv2.circle(frame, tip, 7, color, -1, cv2.LINE_AA)
-    cv2.circle(frame, tip, 11, (255, 255, 255), 1, cv2.LINE_AA)
-    outer = (color[0], color[1], max(color[2] // 2, 40))
-    cv2.circle(frame, tip, 16, outer, 1, cv2.LINE_AA)
+    color = COLORS.get(gesture, (240, 240, 240))
+    # sleek minimal dot
+    cv2.circle(frame, tip, 4, color, -1, cv2.LINE_AA)
+    cv2.circle(frame, tip, 8, (255, 255, 255), 1, cv2.LINE_AA)
 
 
 # -- Main ---------------------------------------------------------------------
@@ -416,13 +411,14 @@ def main():
         if last_screenshot_msg and time.time() - last_screenshot_ts < 2.5:
             flash_overlay = frame.copy()
             cv2.rectangle(flash_overlay,
-                          (FRAME_W // 2 - 165, FRAME_H // 2 - 20),
-                          (FRAME_W // 2 + 165, FRAME_H // 2 + 10),
-                          (0, 80, 80), -1)
-            cv2.addWeighted(flash_overlay, 0.4, frame, 0.6, 0, frame)
-            cv2.putText(frame, last_screenshot_msg,
-                        (FRAME_W // 2 - 150, FRAME_H // 2),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2, cv2.LINE_AA)
+                          (FRAME_W // 2 - 120, FRAME_H // 2 - 20),
+                          (FRAME_W // 2 + 120, FRAME_H // 2 + 20),
+                          (20, 20, 20), -1)
+            cv2.addWeighted(flash_overlay, 0.7, frame, 0.3, 0, frame)
+            msg_lower = last_screenshot_msg.lower()
+            cv2.putText(frame, msg_lower,
+                        (FRAME_W // 2 - 100, FRAME_H // 2 + 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (230, 230, 230), 1, cv2.LINE_AA)
 
         cv2.imshow("Gesture Cursor Control", frame)
 
