@@ -40,8 +40,8 @@ FRAME_W, FRAME_H = 640, 480
 
 # One Euro Filter tuning
 OEF_FREQ         = 30.0     # expected camera FPS
-OEF_MIN_CUTOFF   = 1.5      # Hz - lower = smoother at rest
-OEF_BETA         = 0.05     # speed coefficient - higher = less lag at speed
+OEF_MIN_CUTOFF   = 0.5      # Hz - lower = smoother at rest
+OEF_BETA         = 0.1      # speed coefficient - higher = less lag at speed
 OEF_D_CUTOFF     = 1.0      # derivative filter cutoff
 
 # Screen mapping
@@ -55,14 +55,14 @@ ZOOM_INTERVAL    = 0.10     # min seconds between zoom key presses
 
 # Dead zone (adaptive)
 DEAD_ZONE_MIN    = 1        # minimum dead zone (px) during fast movement
-DEAD_ZONE_MAX    = 5        # maximum dead zone (px) when nearly still
+DEAD_ZONE_MAX    = 8        # maximum dead zone (px) when nearly still
 SPEED_THRESHOLD  = 50       # cursor speed (px/frame) dividing fast vs slow
 
 GESTURE_LOG_LEN  = 6
 SCREENSHOT_DIR   = os.path.expanduser("~/Desktop")
 
 # Tip + DIP blend weight for stable control point
-TIP_WEIGHT       = 0.75     # 1.0 = pure tip (precise but jittery)
+TIP_WEIGHT       = 0.65     # 1.0 = pure tip (precise but jittery)
 
 pyautogui.FAILSAFE = False
 pyautogui.PAUSE    = 0

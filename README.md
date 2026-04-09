@@ -118,10 +118,10 @@ All tunable parameters are at the top of `main.py`:
 
 | Parameter | Default | What it controls |
 |-----------|---------|-----------------|
-| OEF_MIN_CUTOFF | 1.5 | One Euro Filter smoothing at rest (lower = smoother) |
-| OEF_BETA | 0.05 | One Euro Filter speed coefficient (higher = less lag) |
+| OEF_MIN_CUTOFF | 0.5 | One Euro Filter smoothing at rest (lower = smoother) |
+| OEF_BETA | 0.1 | One Euro Filter speed coefficient (higher = less lag) |
 | DEAD_ZONE_MIN | 1 | Min dead zone in pixels (during fast movement) |
-| DEAD_ZONE_MAX | 5 | Max dead zone in pixels (when nearly still) |
+| DEAD_ZONE_MAX | 8 | Max dead zone in pixels (when nearly still) |
 | MARGIN | 50 | Edge buffer zone on webcam frame in pixels |
 | SCROLL_BASE | 3 | Base scroll lines per tick |
 | SCROLL_GAIN | 8.0 | Velocity to scroll-lines multiplier |

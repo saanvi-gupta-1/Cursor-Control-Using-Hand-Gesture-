@@ -1,20 +1,9 @@
 """
 Gesture Detection Engine
 ========================
-Gesture recognition with state-machine hysteresis for scroll and zoom,
-velocity-based proportional control, and palm-relative adaptive thresholds.
-
-Gesture Mappings
-----------------
-  1 finger  (index)                -> Move cursor
-  Pinch     (thumb + index close)  -> Left click
-  Two quick pinches                -> Double click
-  Pinch + middle up                -> Right click
-  2 fingers (index+middle) + move  -> Scroll up/down
-  3 fingers (i+m+ring)   + move    -> Zoom in (up) / out (down)
-  Fist      (hold ~0.15s)          -> Drag and drop
-  5 fingers (palm, hold)           -> Screenshot
-  Thumb + pinky (shaka)            -> Pause / freeze cursor
+Recognizes hand gestures using landmark positions and finger states.
+Uses state machines with hysteresis for scroll/zoom, a 3-frame finger
+smoothing buffer to eliminate flicker, and velocity-proportional control.
 """
 
 import time
@@ -25,15 +14,7 @@ from filters import EMA
 
 
 class GestureDetector:
-    """
-    Gesture recognition engine with intuitive hand-pose mappings.
 
-    Uses frame-counting for gesture confirmation, cooldowns to prevent
-    accidental repeat-fires, and state machines with hysteresis for
-    continuous gestures (scroll, zoom).
-    """
-
-    # Gesture name constants
     GESTURE_NONE         = "none"
     GESTURE_MOVE         = "move"
     GESTURE_CLICK        = "click"
@@ -49,71 +30,67 @@ class GestureDetector:
     GESTURE_SCREENSHOT   = "screenshot"
     GESTURE_PAUSE        = "pause"
 
-    # Tuned thresholds
     PINCH_RATIO             = 0.24
     DOUBLE_CLICK_INTERVAL   = 0.40
     CONFIRM_FRAMES          = 2
     ACTION_COOLDOWN_SEC     = 0.12
 
-    DRAG_HOLD_FRAMES        = 4
+    DRAG_HOLD_FRAMES        = 5
     SCREENSHOT_HOLD_FRAMES  = 5
 
-    # Scroll parameters
-    SCROLL_VELOCITY_THRESH  = 0.4
+    SCROLL_VELOCITY_THRESH  = 0.20
     SCROLL_ENTER_FRAMES     = 2
-    SCROLL_EXIT_FRAMES      = 6
+    SCROLL_EXIT_FRAMES      = 4
 
-    # Zoom parameters (uses vertical movement, same approach as scroll)
-    ZOOM_VELOCITY_THRESH    = 0.35
+    ZOOM_VELOCITY_THRESH    = 0.20
     ZOOM_ENTER_FRAMES       = 2
-    ZOOM_EXIT_FRAMES        = 6
+    ZOOM_EXIT_FRAMES        = 4
 
     def __init__(self):
-        # Pinch / click state
         self._last_pinch_time      = 0
         self._pinch_active         = False
         self._pinch_confirm_count  = 0
         self._right_click_confirm  = 0
         self._right_click_done     = False
 
-        # Drag state
         self._fist_frames          = 0
         self._dragging             = False
 
-        # Scroll state machine
         self._scroll_active        = False
         self._scroll_enter_count   = 0
         self._scroll_exit_count    = 0
         self._scroll_prev_palm_y   = None
         self._scroll_prev_time     = None
-        self._scroll_velocity_ema  = EMA(alpha=0.35)
+        self._scroll_velocity_ema  = EMA(alpha=0.5)
 
-        # Zoom state machine (vertical movement, like scroll)
         self._zoom_active          = False
         self._zoom_enter_count     = 0
         self._zoom_exit_count      = 0
         self._zoom_prev_palm_y     = None
         self._zoom_prev_time       = None
-        self._zoom_velocity_ema    = EMA(alpha=0.35)
+        self._zoom_velocity_ema    = EMA(alpha=0.5)
 
-        # Screenshot
         self._screenshot_hold      = 0
         self._screenshot_done      = False
-
-        # Global cooldown
         self._last_action_time     = 0
 
-    # -------------------------------------------------------------------------
-    #  PUBLIC API
-    # -------------------------------------------------------------------------
+        # 3-frame buffer for majority-vote finger smoothing
+        self._finger_buffer        = deque(maxlen=3)
+
+    def _smooth_fingers(self, fingers):
+        """Smooth finger states over 3 frames using majority voting."""
+        self._finger_buffer.append(list(fingers))
+        if len(self._finger_buffer) < 2:
+            return fingers
+        smoothed = []
+        for i in range(5):
+            votes = sum(1 for f in self._finger_buffer if f[i])
+            smoothed.append(votes >= 2)
+        return smoothed
 
     def detect(self, landmarks, fingers):
         """
-        Main detection entry point.
-
-        Returns (gesture_name, control_point, extra_data)
-            control_point : (x, y) pixel position to anchor cursor
-            extra_data    : dict, may contain 'velocity' for scroll/zoom
+        Returns (gesture_name, control_point, extra_data).
         """
         now = time.time()
 
@@ -121,25 +98,27 @@ class GestureDetector:
             self._reset_on_hand_lost()
             return self.GESTURE_NONE, None, {}
 
+        # Smooth finger states to eliminate single-frame flickers
+        fingers = self._smooth_fingers(fingers)
+
         index_tip  = landmarks[HandTracker.INDEX_TIP]
         thumb_tip  = landmarks[HandTracker.THUMB_TIP]
-        middle_tip = landmarks[HandTracker.MIDDLE_TIP]
         palm_cx, palm_cy = self._palm_center(landmarks)
         palm_size  = self._palm_size(landmarks)
 
         thumb_up, index_up, middle_up, ring_up, pinky_up = fingers
         finger_count = sum(fingers)
 
-        # Priority order:
-        #   1. Screenshot  (5 fingers, held)
-        #   2. Pause       (thumb + pinky only, shaka sign)
-        #   3. Zoom        (3 fingers: index+middle+ring + move up/down)
-        #   4. Scroll      (2 fingers: index+middle + move up/down)
-        #   5. Pinch/Click (thumb+index close)
-        #   6. Drag        (fist, 0 fingers)
+        # Priority:
+        #   1. Screenshot  (5 fingers held)
+        #   2. Pause       (thumb + pinky only)
+        #   3. Zoom        (index + middle + ring up, vertical move)
+        #   4. Scroll      (index + middle up, not ring, vertical move)
+        #   5. Drag        (fist -- all 4 main fingers down)
+        #   6. Pinch/Click (thumb + index close)
         #   7. Move        (index only)
 
-        # 1. SCREENSHOT: all 5 fingers up, held for N frames
+        # 1. SCREENSHOT
         if finger_count == 5:
             self._screenshot_hold += 1
             if (self._screenshot_hold >= self.SCREENSHOT_HOLD_FRAMES
@@ -152,37 +131,55 @@ class GestureDetector:
             self._screenshot_hold = 0
             self._screenshot_done = False
 
-        # 2. PAUSE: thumb + pinky up, others down (shaka sign)
+        # 2. PAUSE (shaka: thumb + pinky, others down)
         if thumb_up and pinky_up and not index_up and not middle_up and not ring_up:
             return self.GESTURE_PAUSE, index_tip, {}
 
-        # 3. ZOOM: index + middle + ring up, NOT pinky (thumb free)
-        #    Move hand UP = zoom in,  DOWN = zoom out
-        zoom_pose = index_up and middle_up and ring_up and not pinky_up
+        # 3. ZOOM: index + middle + ring up (pinky free)
+        zoom_pose = index_up and middle_up and ring_up
         zoom_result = self._update_zoom_state(zoom_pose, palm_cy, palm_size, now)
         if zoom_result is not None:
             return zoom_result[0], index_tip, zoom_result[1]
 
-        # 4. SCROLL: index + middle up, NOT ring, NOT pinky
-        #    (thumb is free, many people can't tuck it)
-        scroll_pose = index_up and middle_up and not ring_up and not pinky_up
+        # 4. SCROLL: index + middle up, ring down (pinky free)
+        scroll_pose = index_up and middle_up and not ring_up
         scroll_result = self._update_scroll_state(scroll_pose, palm_cy, palm_size, now)
         if scroll_result is not None:
             return scroll_result[0], index_tip, scroll_result[1]
 
-        # Keep palm Y fresh for next frame when neither scroll nor zoom is active
+        # Keep palm Y baseline fresh
         self._scroll_prev_palm_y = palm_cy
         self._scroll_prev_time   = now
         self._zoom_prev_palm_y   = palm_cy
         self._zoom_prev_time     = now
 
-        # 5. PINCH detection (click / double-click / right-click)
+        # 5. DRAG: all 4 main fingers down (thumb free -- thumb is
+        #    unreliable in a fist). Checked BEFORE pinch so a fist
+        #    doesn't accidentally trigger a click.
+        fist_pose = not index_up and not middle_up and not ring_up and not pinky_up
+        if fist_pose:
+            self._fist_frames += 1
+            if self._fist_frames >= self.DRAG_HOLD_FRAMES:
+                if not self._dragging:
+                    self._dragging = True
+                    return self.GESTURE_DRAG_START, (palm_cx, palm_cy), {}
+                else:
+                    return self.GESTURE_DRAG_MOVE, (palm_cx, palm_cy), {}
+            # During hold-up period, block other gestures
+            return self.GESTURE_NONE, index_tip, {}
+        else:
+            if self._dragging:
+                self._dragging    = False
+                self._fist_frames = 0
+                return self.GESTURE_DRAG_END, (palm_cx, palm_cy), {}
+            self._fist_frames = 0
+
+        # 6. PINCH (click / double-click / right-click)
         pinch_dist = np.hypot(thumb_tip[0] - index_tip[0],
                               thumb_tip[1] - index_tip[1])
         effective_threshold = max(self.PINCH_RATIO * palm_size, 18)
         is_pinching = pinch_dist < effective_threshold
 
-        # Right-click: pinch + middle finger up
         if is_pinching and middle_up:
             self._right_click_confirm += 1
             if (self._right_click_confirm >= self.CONFIRM_FRAMES
@@ -196,7 +193,6 @@ class GestureDetector:
             if not is_pinching:
                 self._right_click_done = False
 
-        # Standard pinch (click / double-click)
         if is_pinching and not middle_up:
             self._pinch_confirm_count += 1
             if (self._pinch_confirm_count >= self.CONFIRM_FRAMES
@@ -217,34 +213,15 @@ class GestureDetector:
         if not is_pinching:
             self._pinch_active = False
 
-        # 6. DRAG: closed fist (0 fingers)
-        if finger_count == 0:
-            self._fist_frames += 1
-            if self._fist_frames >= self.DRAG_HOLD_FRAMES:
-                if not self._dragging:
-                    self._dragging = True
-                    return self.GESTURE_DRAG_START, (palm_cx, palm_cy), {}
-                else:
-                    return self.GESTURE_DRAG_MOVE, (palm_cx, palm_cy), {}
-        else:
-            if self._dragging:
-                self._dragging    = False
-                self._fist_frames = 0
-                return self.GESTURE_DRAG_END, (palm_cx, palm_cy), {}
-            self._fist_frames = 0
-
         # 7. MOVE: index up (thumb allowed)
         if index_up and not middle_up and not ring_up and not pinky_up:
             return self.GESTURE_MOVE, index_tip, {}
 
         return self.GESTURE_NONE, index_tip, {}
 
-    # -------------------------------------------------------------------------
-    #  SCROLL STATE MACHINE
-    # -------------------------------------------------------------------------
+    # -- Scroll state machine --------------------------------------------------
 
     def _update_scroll_state(self, pose_active, palm_cy, palm_size, now):
-        """State machine for scroll with enter/exit hysteresis."""
         if pose_active:
             self._scroll_exit_count = 0
             if not self._scroll_active:
@@ -262,14 +239,13 @@ class GestureDetector:
             if self._scroll_active:
                 self._scroll_exit_count += 1
                 if self._scroll_exit_count >= self.SCROLL_EXIT_FRAMES:
-                    self._scroll_active = False
+                    self._scroll_active      = False
                     self._scroll_prev_palm_y = None
                 else:
                     return (self.GESTURE_NONE, {})
             return None
 
     def _compute_scroll(self, palm_cy, palm_size, now):
-        """Compute scroll direction and velocity from palm movement."""
         if self._scroll_prev_palm_y is None or self._scroll_prev_time is None:
             self._scroll_prev_palm_y = palm_cy
             self._scroll_prev_time   = now
@@ -289,15 +265,11 @@ class GestureDetector:
                 return (self.GESTURE_SCROLL_UP, {"velocity": magnitude})
             else:
                 return (self.GESTURE_SCROLL_DOWN, {"velocity": magnitude})
-
         return (self.GESTURE_NONE, {})
 
-    # -------------------------------------------------------------------------
-    #  ZOOM STATE MACHINE (vertical movement, same approach as scroll)
-    # -------------------------------------------------------------------------
+    # -- Zoom state machine ----------------------------------------------------
 
     def _update_zoom_state(self, pose_active, palm_cy, palm_size, now):
-        """State machine for zoom with enter/exit hysteresis."""
         if pose_active:
             self._zoom_exit_count = 0
             if not self._zoom_active:
@@ -318,17 +290,12 @@ class GestureDetector:
                     self._zoom_active      = False
                     self._zoom_prev_palm_y = None
                 else:
-                    # Keep updating so we don't build stale deltas
                     self._zoom_prev_palm_y = palm_cy
                     self._zoom_prev_time   = now
                     return (self.GESTURE_NONE, {})
             return None
 
     def _compute_zoom(self, palm_cy, palm_size, now):
-        """
-        Compute zoom from vertical hand movement.
-        Move hand UP = zoom in,  move hand DOWN = zoom out.
-        """
         if self._zoom_prev_palm_y is None or self._zoom_prev_time is None:
             self._zoom_prev_palm_y = palm_cy
             self._zoom_prev_time   = now
@@ -345,17 +312,12 @@ class GestureDetector:
         if abs(smooth_vel) > self.ZOOM_VELOCITY_THRESH:
             magnitude = abs(smooth_vel)
             if smooth_vel < 0:
-                # Hand moving UP in frame -> zoom IN
                 return (self.GESTURE_ZOOM_IN, {"velocity": magnitude})
             else:
-                # Hand moving DOWN in frame -> zoom OUT
                 return (self.GESTURE_ZOOM_OUT, {"velocity": magnitude})
-
         return (self.GESTURE_NONE, {})
 
-    # -------------------------------------------------------------------------
-    #  HELPERS
-    # -------------------------------------------------------------------------
+    # -- Helpers ---------------------------------------------------------------
 
     def _can_act(self):
         return (time.time() - self._last_action_time) >= self.ACTION_COOLDOWN_SEC
@@ -364,7 +326,6 @@ class GestureDetector:
         self._last_action_time = time.time()
 
     def _reset_on_hand_lost(self):
-        """Reset all state when hand disappears."""
         if self._dragging:
             self._dragging    = False
             self._fist_frames = 0
@@ -378,6 +339,7 @@ class GestureDetector:
         self._zoom_active        = False
         self._zoom_enter_count   = 0
         self._zoom_exit_count    = 0
+        self._finger_buffer.clear()
 
     def _palm_center(self, landmarks):
         pts = [landmarks[i] for i in [0, 5, 9, 13, 17]]
