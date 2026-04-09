@@ -1,15 +1,23 @@
 """
-Advanced Gesture Cursor Control
-================================
+Advanced Gesture Cursor Control v2
+====================================
 Control your entire computer in real time using hand gestures.
 
-Features
---------
-* Double-exponential (Holt) cursor smoothing – buttery movement, no jitter
-* Dead-zone filtering – micro-tremors are ignored
-* Frame-confirmed gestures – no accidental clicks or screenshots
-* Adaptive pinch threshold – works at any hand-to-camera distance
-* Professional HUD with gesture history, FPS, and status indicators
+v2 — Advanced Technologies
+--------------------------
+* **1€ (One Euro) Filter** — the gold-standard adaptive cursor smoother
+  from CHI 2012.  Eliminates jitter at rest while preserving responsiveness
+  during fast movement.  Replaces the old Holt double-exponential.
+* **Stabilized control point** — blends index tip (precise) with DIP
+  (stable) for a 75/25 weighted average that cuts fingertip jitter.
+* **Velocity-proportional scroll** — scroll amount scales with how fast
+  you move your hand.  Slow movement = fine scroll, fast = page jump.
+* **Velocity-proportional zoom** — same proportional feel for zoom.
+* **Gesture hysteresis** — entering scroll/zoom mode takes 2 frames,
+  but exiting takes 6 frames, so brief detection drop-outs don't
+  interrupt your gesture.
+* **Adaptive dead-zone** — the dead-zone shrinks when you are moving
+  fast and grows when you are nearly still.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   GESTURE CHEAT SHEET
@@ -38,25 +46,40 @@ import sys
 from collections import deque
 from hand_tracker import HandTracker
 from gesture import GestureDetector
+from filters import OneEuroFilter2D
 
 # ── Config ──────────────────────────────────────────────────────────────────
 WEBCAM_ID        = 0
 FRAME_W, FRAME_H = 640, 480
 
-# Smoothing (Holt double-exponential)
-SMOOTH_ALPHA     = 0.45      # level weight  (higher = more responsive, less smooth)
-SMOOTH_BETA      = 0.20      # trend weight  (higher = faster to catch up)
-DEAD_ZONE        = 2         # ignore moves smaller than this (px) – was 4
+# One Euro Filter tuning (the key smoothing parameters)
+OEF_FREQ         = 30.0     # expected camera FPS
+OEF_MIN_CUTOFF   = 1.5      # Hz – lower = smoother at rest  (try 0.5–3.0)
+OEF_BETA         = 0.05     # speed coeff – higher = less lag at speed (try 0.01–0.1)
+OEF_D_CUTOFF     = 1.0      # derivative filter cutoff (usually 1.0)
 
-MARGIN           = 60        # ignore-zone near frame edges (was 100 – too aggressive)
-SCROLL_AMOUNT    = 5         # lines per scroll tick (was 3)
-ZOOM_INTERVAL    = 0.08      # minimum seconds between zoom key presses
+# Screen mapping
+MARGIN           = 50       # ignore-zone near frame edges (pixels)
 
-GESTURE_LOG_LEN  = 6         # how many past gestures to display in HUD
+# Scroll / zoom
+SCROLL_BASE      = 3        # base scroll lines per tick
+SCROLL_MAX       = 20       # max scroll lines per tick
+SCROLL_GAIN      = 8.0      # velocity → scroll-lines multiplier
+ZOOM_INTERVAL    = 0.10     # min seconds between zoom key presses
+
+# Dead zone (adaptive)
+DEAD_ZONE_MIN    = 1        # minimum dead zone (px) – during fast movement
+DEAD_ZONE_MAX    = 5        # maximum dead zone (px) – when nearly still
+SPEED_THRESHOLD  = 50       # cursor speed (px/frame) dividing fast vs slow
+
+GESTURE_LOG_LEN  = 6
 SCREENSHOT_DIR   = os.path.expanduser("~/Desktop")
 
+# Tip + DIP blend weight for stable control point
+TIP_WEIGHT       = 0.75     # 1.0 = pure tip (precise but jittery)
+
 pyautogui.FAILSAFE = False
-pyautogui.PAUSE    = 0       # CRITICAL: 0ms pause – pyautogui.PAUSE was adding 8ms
+pyautogui.PAUSE    = 0       # ZERO pause – critical for responsiveness
 
 # ── Color palette (BGR) ────────────────────────────────────────────────────
 COLORS = {
@@ -94,45 +117,6 @@ EMOJI = {
 }
 
 
-# ── Holt Double-Exponential Smoother ────────────────────────────────────────
-
-class HoltSmoother:
-    """
-    Double-exponential (Holt) smoother for 2-D cursor positions.
-
-    Predicts the *next* position using both the current level and trend,
-    giving butter-smooth movement without the lag of a simple average.
-    """
-
-    def __init__(self, alpha=SMOOTH_ALPHA, beta=SMOOTH_BETA):
-        self.alpha  = alpha
-        self.beta   = beta
-        self.level  = None   # (x, y) smoothed position
-        self.trend  = None   # (dx, dy) velocity estimate
-        self._initialized = False
-
-    def update(self, raw_x, raw_y):
-        """Feed a new raw position and return the smoothed position."""
-        if not self._initialized:
-            self.level = np.array([raw_x, raw_y], dtype=np.float64)
-            self.trend = np.array([0.0, 0.0])
-            self._initialized = True
-            return int(raw_x), int(raw_y)
-
-        raw       = np.array([raw_x, raw_y], dtype=np.float64)
-        prev_lvl  = self.level.copy()
-        self.level = self.alpha * raw + (1 - self.alpha) * (self.level + self.trend)
-        self.trend = self.beta * (self.level - prev_lvl) + (1 - self.beta) * self.trend
-
-        # Predict one step ahead for lower perceived latency
-        predicted = self.level + self.trend
-        return int(predicted[0]), int(predicted[1])
-
-    def reset(self):
-        """Reset when hand disappears."""
-        self._initialized = False
-
-
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def map_to_screen(x, y, frame_w, frame_h, screen_w, screen_h, margin=MARGIN):
@@ -141,7 +125,7 @@ def map_to_screen(x, y, frame_w, frame_h, screen_w, screen_h, margin=MARGIN):
     y  = np.clip(y, margin, frame_h - margin)
     sx = np.interp(x, [margin, frame_w - margin], [0, screen_w])
     sy = np.interp(y, [margin, frame_h - margin], [0, screen_h])
-    return int(sx), int(sy)
+    return float(sx), float(sy)
 
 
 def take_screenshot():
@@ -170,14 +154,14 @@ def draw_gesture_log(frame, log):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, faded, 1, cv2.LINE_AA)
 
 
-def draw_hud(frame, gesture, paused, sx, sy, fps, dragging, log):
+def draw_hud(frame, gesture, paused, sx, sy, fps, dragging, log,
+             scroll_active, zoom_active):
     """Draw full professional HUD overlay."""
     h, w = frame.shape[:2]
 
     # ── Top bar with gradient ────────────────────────────────────────────
     overlay = frame.copy()
     for row in range(80):
-        alpha_row = 0.75 - (row / 80) * 0.35
         cv2.rectangle(overlay, (0, row), (w, row + 1), (10, 10, 20), -1)
     cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
 
@@ -192,24 +176,36 @@ def draw_hud(frame, gesture, paused, sx, sy, fps, dragging, log):
     cv2.putText(frame, label, (40, 38),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.85, color, 2, cv2.LINE_AA)
 
+    # Mode indicators
+    mode_y = 58
+    if scroll_active:
+        cv2.putText(frame, "[SCROLL MODE]", (40, mode_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 255, 200), 1, cv2.LINE_AA)
+        mode_y += 16
+    if zoom_active:
+        cv2.putText(frame, "[ZOOM MODE]", (40, mode_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1, cv2.LINE_AA)
+        mode_y += 16
+
     # Status line
     if paused:
-        status = "CURSOR FROZEN"
-        cv2.putText(frame, status, (40, 62),
+        cv2.putText(frame, "CURSOR FROZEN", (40, mode_y),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (80, 80, 255), 1, cv2.LINE_AA)
     elif dragging:
-        status = f"DRAG -> ({sx}, {sy})"
-        cv2.putText(frame, status, (40, 62),
+        cv2.putText(frame, f"DRAG -> ({sx}, {sy})", (40, mode_y),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 180, 40), 1, cv2.LINE_AA)
     else:
-        status = f"Cursor ({sx}, {sy})"
-        cv2.putText(frame, status, (40, 62),
+        cv2.putText(frame, f"Cursor ({sx}, {sy})", (40, mode_y),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1, cv2.LINE_AA)
 
-    # FPS top-right with color coding
+    # FPS top-right
     fps_color = (100, 255, 100) if fps >= 24 else (0, 200, 255) if fps >= 15 else (0, 80, 255)
     cv2.putText(frame, f"FPS {fps:.0f}", (w - 95, 22),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.55, fps_color, 1, cv2.LINE_AA)
+
+    # Filter indicator
+    cv2.putText(frame, "1-EURO", (w - 95, 42),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (120, 120, 200), 1, cv2.LINE_AA)
 
     # Gesture log sidebar
     draw_gesture_log(frame, log)
@@ -219,10 +215,10 @@ def draw_hud(frame, gesture, paused, sx, sy, fps, dragging, log):
     cv2.rectangle(overlay2, (0, h - 28), (w, h), (10, 10, 20), -1)
     cv2.addWeighted(overlay2, 0.7, frame, 0.3, 0, frame)
     cv2.putText(frame,
-                "Q:Quit | Pinch:Click | 2-Finger:Scroll | Fist:Drag | Palm(hold):Screenshot",
-                (6, h - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.34, (160, 160, 160), 1, cv2.LINE_AA)
+                "Q:Quit | Pinch:Click | 2-Finger:Scroll | Thumb+Pinky:Zoom | Fist:Drag | Palm:Screenshot",
+                (6, h - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.30, (160, 160, 160), 1, cv2.LINE_AA)
 
-    # Drag ring around cursor on the frame
+    # Drag ring
     if dragging:
         cx = int(sx * w / pyautogui.size()[0])
         cy = int(sy * h / pyautogui.size()[1])
@@ -237,7 +233,6 @@ def draw_cursor_dot(frame, tip, gesture):
     color = COLORS.get(gesture, (255, 255, 255))
     cv2.circle(frame, tip, 7,  color,            -1, cv2.LINE_AA)
     cv2.circle(frame, tip, 11, (255, 255, 255),   1, cv2.LINE_AA)
-    # Subtle outer glow
     cv2.circle(frame, tip, 16, (*color[:2], max(color[2] // 2, 40)), 1, cv2.LINE_AA)
 
 
@@ -246,18 +241,15 @@ def draw_cursor_dot(frame, tip, gesture):
 def main():
     screen_w, screen_h = pyautogui.size()
 
-    # ── Open webcam with retry (tries IDs 0, 1, 2) ────────────────────────
     def open_camera():
-        """Try multiple camera IDs and return an opened VideoCapture."""
         for cam_id in [WEBCAM_ID, 0, 1, 2]:
             print(f"📷  Trying camera ID {cam_id}...")
-            c = cv2.VideoCapture(cam_id, cv2.CAP_DSHOW)   # DirectShow on Windows
+            c = cv2.VideoCapture(cam_id, cv2.CAP_DSHOW)
             if c.isOpened():
                 c.set(cv2.CAP_PROP_FRAME_WIDTH,  FRAME_W)
                 c.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_H)
                 c.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                c.set(cv2.CAP_PROP_FPS, 30)   # request 30fps from camera
-                # Warmup: flush initial blank frames
+                c.set(cv2.CAP_PROP_FPS, 30)
                 for _ in range(5):
                     c.read()
                 print(f"✅  Camera ID {cam_id} opened successfully.")
@@ -272,7 +264,14 @@ def main():
 
     tracker  = HandTracker(max_hands=1)
     detector = GestureDetector()
-    smoother = HoltSmoother()
+
+    # ── 1€ Filter for cursor ────────────────────────────────────────────────
+    cursor_filter = OneEuroFilter2D(
+        freq=OEF_FREQ,
+        min_cutoff=OEF_MIN_CUTOFF,
+        beta=OEF_BETA,
+        d_cutoff=OEF_D_CUTOFF,
+    )
 
     # State
     prev_sx = prev_sy   = 0
@@ -283,12 +282,11 @@ def main():
     frame_fail_count    = 0
     MAX_FRAME_FAILS     = 30
 
-    # Zoom rate-limiting
+    # Timing
     last_zoom_time      = 0
-
-    # FPS tracking
-    fps_buffer = deque(maxlen=30)
-    prev_time  = time.time()
+    last_scroll_time    = 0
+    fps_buffer          = deque(maxlen=30)
+    prev_time           = time.time()
 
     print(__doc__)
     print("✅  Starting... Press Q in the webcam window to quit.\n")
@@ -308,7 +306,7 @@ def main():
                 frame_fail_count = 0
             time.sleep(0.05)
             continue
-        frame_fail_count = 0   # reset on success
+        frame_fail_count = 0
 
         # FPS
         now       = time.time()
@@ -321,7 +319,7 @@ def main():
         landmarks      = tracker.get_landmarks(results, frame.shape)
         fingers        = tracker.fingers_up(landmarks)
 
-        gesture, tip, _extra = detector.detect(landmarks, fingers)
+        gesture, tip, extra = detector.detect(landmarks, fingers)
 
         sx, sy  = prev_sx, prev_sy
         paused  = gesture == GestureDetector.GESTURE_PAUSE
@@ -333,21 +331,31 @@ def main():
 
         # ── Execute actions ────────────────────────────────────────────────
         if tip and not paused:
+            # ── Stabilized control point : blend tip + DIP ─────────────────
+            stable_tip = tracker.get_stable_control_point(landmarks, TIP_WEIGHT)
+            if stable_tip is None:
+                stable_tip = tip
+
+            # Map to screen coordinates
             raw_sx, raw_sy = map_to_screen(
-                tip[0], tip[1], FRAME_W, FRAME_H, screen_w, screen_h
+                stable_tip[0], stable_tip[1],
+                FRAME_W, FRAME_H, screen_w, screen_h,
             )
 
-            # Holt double-exponential smoothing (with prediction)
-            sx, sy = smoother.update(raw_sx, raw_sy)
+            # ── 1€ Filter ─────────────────────────────────────────────────
+            filtered_x, filtered_y = cursor_filter(raw_sx, raw_sy, now)
+            sx = int(np.clip(filtered_x, 0, screen_w - 1))
+            sy = int(np.clip(filtered_y, 0, screen_h - 1))
 
-            # Clamp to screen bounds (prediction can overshoot)
-            sx = max(0, min(sx, screen_w - 1))
-            sy = max(0, min(sy, screen_h - 1))
-
-            # Dead-zone: skip micro-movements to prevent jitter
-            if abs(sx - prev_sx) < DEAD_ZONE and abs(sy - prev_sy) < DEAD_ZONE:
+            # ── Adaptive dead-zone ────────────────────────────────────────
+            speed = np.hypot(sx - prev_sx, sy - prev_sy)
+            dead_zone = int(np.interp(speed,
+                                      [0, SPEED_THRESHOLD],
+                                      [DEAD_ZONE_MAX, DEAD_ZONE_MIN]))
+            if abs(sx - prev_sx) < dead_zone and abs(sy - prev_sy) < dead_zone:
                 sx, sy = prev_sx, prev_sy
 
+            # ── Gesture actions ───────────────────────────────────────────
             if gesture == GestureDetector.GESTURE_MOVE:
                 pyautogui.moveTo(sx, sy)
 
@@ -372,11 +380,16 @@ def main():
                 pyautogui.mouseUp()
                 dragging = False
 
-            elif gesture == GestureDetector.GESTURE_SCROLL_UP:
-                pyautogui.scroll(SCROLL_AMOUNT)
-
-            elif gesture == GestureDetector.GESTURE_SCROLL_DOWN:
-                pyautogui.scroll(-SCROLL_AMOUNT)
+            elif gesture in (GestureDetector.GESTURE_SCROLL_UP,
+                             GestureDetector.GESTURE_SCROLL_DOWN):
+                # Velocity-proportional scroll
+                vel = extra.get("velocity", 1.0)
+                amount = int(np.clip(SCROLL_BASE + vel * SCROLL_GAIN,
+                                     SCROLL_BASE, SCROLL_MAX))
+                if gesture == GestureDetector.GESTURE_SCROLL_UP:
+                    pyautogui.scroll(amount)
+                else:
+                    pyautogui.scroll(-amount)
 
             elif gesture == GestureDetector.GESTURE_ZOOM_IN:
                 if now - last_zoom_time > ZOOM_INTERVAL:
@@ -396,8 +409,7 @@ def main():
             prev_sx, prev_sy = sx, sy
 
         elif landmarks is None:
-            # Hand disappeared → reset smoother so it doesn't "jump" on return
-            smoother.reset()
+            cursor_filter.reset()
 
         # Safety: release mouse if hand disappears while dragging
         if landmarks is None and dragging:
@@ -406,7 +418,8 @@ def main():
 
         # ── Draw ──────────────────────────────────────────────────────────
         draw_cursor_dot(frame, tip, gesture)
-        draw_hud(frame, gesture, paused, sx, sy, fps, dragging, gesture_log)
+        draw_hud(frame, gesture, paused, sx, sy, fps, dragging, gesture_log,
+                 detector._scroll_active, detector._zoom_active)
 
         # Screenshot flash notification
         if last_screenshot_msg and time.time() - last_screenshot_ts < 2.5:

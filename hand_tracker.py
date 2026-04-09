@@ -1,9 +1,14 @@
 """
-Hand Tracking Module
-====================
+Hand Tracking Module v2
+=======================
 Wraps MediaPipe Hands for real-time hand landmark detection.
-Provides robust finger-up detection using angle-aware logic and
-utility helpers for palm geometry.
+
+v2 Changes
+----------
+* Lower detection/tracking confidence → more consistent tracking
+* Stable control point getter (tip + DIP blend) → less fingertip jitter
+* Finger-up detection with angular tolerance → fewer false flickers
+* Palm geometry helpers used by gesture engine
 """
 
 import mediapipe as mp
@@ -19,6 +24,7 @@ class HandTracker:
     --------
     * Configurable detection / tracking confidence
     * Angle-aware finger-up detection (handles both left and right hands)
+    * **Stable control point** — blends index tip with DIP for reduced jitter
     * Helper methods for distance, midpoint, palm geometry
     """
 
@@ -45,8 +51,13 @@ class HandTracker:
     PINKY_DIP    = 19
     PINKY_TIP    = 20
 
-    def __init__(self, max_hands=1, detection_confidence=0.85,
-                 tracking_confidence=0.8):
+    def __init__(self, max_hands=1, detection_confidence=0.7,
+                 tracking_confidence=0.6):
+        """
+        Lower confidence thresholds than default — improves tracking
+        continuity so the hand isn't "lost" during fast movement or
+        partial occlusion.
+        """
         self.mp_hands  = mp.solutions.hands
         self.mp_draw   = mp.solutions.drawing_utils
         self.mp_styles = mp.solutions.drawing_styles
@@ -97,6 +108,22 @@ class HandTracker:
             landmarks[idx] = (int(lm.x * w), int(lm.y * h))
         return landmarks
 
+    def get_landmarks_3d(self, results, frame_shape, hand_index=0):
+        """
+        Return pixel-space landmarks WITH z-depth as {id: (x, y, z)}.
+        z is the raw MediaPipe relative depth (negative = closer to camera).
+        """
+        if not results.multi_hand_landmarks:
+            return None
+        if hand_index >= len(results.multi_hand_landmarks):
+            return None
+        h, w = frame_shape[:2]
+        hand_lm = results.multi_hand_landmarks[hand_index]
+        landmarks = {}
+        for idx, lm in enumerate(hand_lm.landmark):
+            landmarks[idx] = (int(lm.x * w), int(lm.y * h), lm.z)
+        return landmarks
+
     def get_landmarks_normalized(self, results, hand_index=0):
         """Returns normalized (0-1) landmarks for rotation-invariant gestures."""
         if not results.multi_hand_landmarks:
@@ -107,13 +134,31 @@ class HandTracker:
         return {idx: (lm.x, lm.y, lm.z)
                 for idx, lm in enumerate(hand_lm.landmark)}
 
+    def get_stable_control_point(self, landmarks, tip_weight=0.75):
+        """
+        Return a stabilized cursor control point by blending
+        the jittery index TIP with the more stable index DIP.
+
+        tip_weight : how much to trust the tip (default 0.75)
+            – 1.0 = pure tip (precise but jittery)
+            – 0.5 = 50/50 blend (very stable but less precise)
+        """
+        if landmarks is None:
+            return None
+        tip = landmarks[self.INDEX_TIP]
+        dip = landmarks[self.INDEX_DIP]
+        x = int(tip_weight * tip[0] + (1 - tip_weight) * dip[0])
+        y = int(tip_weight * tip[1] + (1 - tip_weight) * dip[1])
+        return (x, y)
+
     def fingers_up(self, landmarks):
         """
         Returns [thumb, index, middle, ring, pinky] booleans.
 
         Thumb uses **handedness-aware X-axis comparison** so it works
         correctly for both left and right hands (after mirror flip).
-        Other fingers use Y-axis (tip above PIP *and* MCP).
+        Other fingers use Y-axis (tip above PIP *and* MCP) with a
+        small tolerance margin to reduce flicker.
         """
         if landmarks is None:
             return [False] * 5
@@ -125,21 +170,23 @@ class HandTracker:
         mcps = [self.THUMB_MCP, self.INDEX_MCP, self.MIDDLE_MCP,
                 self.RING_MCP, self.PINKY_MCP]
 
+        # Tolerance: a few pixels of margin to prevent flickering
+        # at the boundary between "up" and "down"
+        TOLERANCE = 4  # pixels
+
         up = []
         for i, (tip_id, pip_id, mcp_id) in enumerate(zip(tips, pips, mcps)):
             if i == 0:  # Thumb – X axis, handedness-aware
-                # After mirror-flip: "Right" label → user's right hand
-                # appears on screen-right, thumb tip should be LEFT of IP
                 if self._handedness == "Right":
-                    up.append(landmarks[tip_id][0] < landmarks[pip_id][0])
+                    up.append(landmarks[tip_id][0] < landmarks[pip_id][0] - TOLERANCE)
                 else:
-                    up.append(landmarks[tip_id][0] > landmarks[pip_id][0])
+                    up.append(landmarks[tip_id][0] > landmarks[pip_id][0] + TOLERANCE)
             else:
                 tip_y = landmarks[tip_id][1]
                 pip_y = landmarks[pip_id][1]
                 mcp_y = landmarks[mcp_id][1]
-                # Finger is up if tip is above both PIP and MCP
-                up.append(tip_y < pip_y and tip_y < mcp_y)
+                # Finger is up if tip is above both PIP and MCP (with tolerance)
+                up.append(tip_y < pip_y - TOLERANCE and tip_y < mcp_y - TOLERANCE)
         return up
 
     def count_fingers(self, landmarks):
