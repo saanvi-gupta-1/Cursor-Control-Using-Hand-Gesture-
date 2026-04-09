@@ -43,19 +43,20 @@ from gesture import GestureDetector
 WEBCAM_ID        = 0
 FRAME_W, FRAME_H = 640, 480
 
-# Smoothing
-SMOOTH_ALPHA     = 0.35      # Holt smoother – level weight  (0-1: lower = smoother)
-SMOOTH_BETA      = 0.15      # Holt smoother – trend weight  (0-1: lower = smoother)
-DEAD_ZONE        = 4         # ignore cursor moves smaller than this (px)
+# Smoothing (Holt double-exponential)
+SMOOTH_ALPHA     = 0.45      # level weight  (higher = more responsive, less smooth)
+SMOOTH_BETA      = 0.20      # trend weight  (higher = faster to catch up)
+DEAD_ZONE        = 2         # ignore moves smaller than this (px) – was 4
 
-MARGIN           = 100       # ignore-zone near frame edges (pixels)
-SCROLL_AMOUNT    = 3         # lines per scroll tick
+MARGIN           = 60        # ignore-zone near frame edges (was 100 – too aggressive)
+SCROLL_AMOUNT    = 5         # lines per scroll tick (was 3)
+ZOOM_INTERVAL    = 0.08      # minimum seconds between zoom key presses
 
 GESTURE_LOG_LEN  = 6         # how many past gestures to display in HUD
 SCREENSHOT_DIR   = os.path.expanduser("~/Desktop")
 
 pyautogui.FAILSAFE = False
-pyautogui.PAUSE    = 0.008   # 8ms – prevents flooding OS with mouse events
+pyautogui.PAUSE    = 0       # CRITICAL: 0ms pause – pyautogui.PAUSE was adding 8ms
 
 # ── Color palette (BGR) ────────────────────────────────────────────────────
 COLORS = {
@@ -123,7 +124,9 @@ class HoltSmoother:
         self.level = self.alpha * raw + (1 - self.alpha) * (self.level + self.trend)
         self.trend = self.beta * (self.level - prev_lvl) + (1 - self.beta) * self.trend
 
-        return int(self.level[0]), int(self.level[1])
+        # Predict one step ahead for lower perceived latency
+        predicted = self.level + self.trend
+        return int(predicted[0]), int(predicted[1])
 
     def reset(self):
         """Reset when hand disappears."""
@@ -173,7 +176,6 @@ def draw_hud(frame, gesture, paused, sx, sy, fps, dragging, log):
 
     # ── Top bar with gradient ────────────────────────────────────────────
     overlay = frame.copy()
-    # Draw a gradient bar (dark at top, fading out)
     for row in range(80):
         alpha_row = 0.75 - (row / 80) * 0.35
         cv2.rectangle(overlay, (0, row), (w, row + 1), (10, 10, 20), -1)
@@ -254,6 +256,7 @@ def main():
                 c.set(cv2.CAP_PROP_FRAME_WIDTH,  FRAME_W)
                 c.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_H)
                 c.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                c.set(cv2.CAP_PROP_FPS, 30)   # request 30fps from camera
                 # Warmup: flush initial blank frames
                 for _ in range(5):
                     c.read()
@@ -279,6 +282,9 @@ def main():
     gesture_log         = deque(maxlen=GESTURE_LOG_LEN)
     frame_fail_count    = 0
     MAX_FRAME_FAILS     = 30
+
+    # Zoom rate-limiting
+    last_zoom_time      = 0
 
     # FPS tracking
     fps_buffer = deque(maxlen=30)
@@ -331,8 +337,12 @@ def main():
                 tip[0], tip[1], FRAME_W, FRAME_H, screen_w, screen_h
             )
 
-            # Holt double-exponential smoothing
+            # Holt double-exponential smoothing (with prediction)
             sx, sy = smoother.update(raw_sx, raw_sy)
+
+            # Clamp to screen bounds (prediction can overshoot)
+            sx = max(0, min(sx, screen_w - 1))
+            sy = max(0, min(sy, screen_h - 1))
 
             # Dead-zone: skip micro-movements to prevent jitter
             if abs(sx - prev_sx) < DEAD_ZONE and abs(sy - prev_sy) < DEAD_ZONE:
@@ -369,10 +379,14 @@ def main():
                 pyautogui.scroll(-SCROLL_AMOUNT)
 
             elif gesture == GestureDetector.GESTURE_ZOOM_IN:
-                pyautogui.hotkey("ctrl", "+")
+                if now - last_zoom_time > ZOOM_INTERVAL:
+                    pyautogui.hotkey("ctrl", "+")
+                    last_zoom_time = now
 
             elif gesture == GestureDetector.GESTURE_ZOOM_OUT:
-                pyautogui.hotkey("ctrl", "-")
+                if now - last_zoom_time > ZOOM_INTERVAL:
+                    pyautogui.hotkey("ctrl", "-")
+                    last_zoom_time = now
 
             elif gesture == GestureDetector.GESTURE_SCREENSHOT:
                 path = take_screenshot()
@@ -396,7 +410,6 @@ def main():
 
         # Screenshot flash notification
         if last_screenshot_msg and time.time() - last_screenshot_ts < 2.5:
-            # Semi-transparent flash background
             flash_overlay = frame.copy()
             cv2.rectangle(flash_overlay,
                           (FRAME_W // 2 - 165, FRAME_H // 2 - 20),
