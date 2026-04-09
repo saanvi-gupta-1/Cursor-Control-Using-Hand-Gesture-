@@ -244,22 +244,28 @@ def draw_cursor_dot(frame, tip, gesture):
 def main():
     screen_w, screen_h = pyautogui.size()
 
-    # ── Open webcam with retry ───────────────────────────────────────────
-    cap = None
-    for attempt in range(3):
-        cap = cv2.VideoCapture(WEBCAM_ID)
-        if cap.isOpened():
-            break
-        print(f"⚠  Webcam not found (attempt {attempt + 1}/3), retrying...")
-        time.sleep(1)
+    # ── Open webcam with retry (tries IDs 0, 1, 2) ────────────────────────
+    def open_camera():
+        """Try multiple camera IDs and return an opened VideoCapture."""
+        for cam_id in [WEBCAM_ID, 0, 1, 2]:
+            print(f"📷  Trying camera ID {cam_id}...")
+            c = cv2.VideoCapture(cam_id, cv2.CAP_DSHOW)   # DirectShow on Windows
+            if c.isOpened():
+                c.set(cv2.CAP_PROP_FRAME_WIDTH,  FRAME_W)
+                c.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_H)
+                c.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                # Warmup: flush initial blank frames
+                for _ in range(5):
+                    c.read()
+                print(f"✅  Camera ID {cam_id} opened successfully.")
+                return c
+            c.release()
+        return None
 
-    if cap is None or not cap.isOpened():
-        print("❌  Could not open webcam. Exiting.")
+    cap = open_camera()
+    if cap is None:
+        print("❌  Could not open any webcam. Make sure no other app is using it.")
         sys.exit(1)
-
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  FRAME_W)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_H)
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # reduce latency
 
     tracker  = HandTracker(max_hands=1)
     detector = GestureDetector()
@@ -271,6 +277,8 @@ def main():
     last_screenshot_msg = ""
     last_screenshot_ts  = 0
     gesture_log         = deque(maxlen=GESTURE_LOG_LEN)
+    frame_fail_count    = 0
+    MAX_FRAME_FAILS     = 30
 
     # FPS tracking
     fps_buffer = deque(maxlen=30)
@@ -282,9 +290,19 @@ def main():
     while True:
         ok, frame = cap.read()
         if not ok:
-            print("⚠  Frame read failed, retrying...")
+            frame_fail_count += 1
+            if frame_fail_count >= MAX_FRAME_FAILS:
+                print("⚠  Too many frame failures. Reopening camera...")
+                cap.release()
+                time.sleep(1)
+                cap = open_camera()
+                if cap is None:
+                    print("❌  Camera lost. Exiting.")
+                    break
+                frame_fail_count = 0
             time.sleep(0.05)
             continue
+        frame_fail_count = 0   # reset on success
 
         # FPS
         now       = time.time()

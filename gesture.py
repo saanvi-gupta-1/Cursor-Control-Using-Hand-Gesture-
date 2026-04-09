@@ -6,6 +6,13 @@ Robust, frame-confirmed gesture recognition with adaptive thresholds.
 Every action gesture (click, right-click, screenshot, scroll, zoom) now
 requires multi-frame confirmation and respects a global cooldown to
 prevent accidental triggers.
+
+v2 – Major fixes for scroll, zoom, and cursor smoothness:
+   • Scroll: relaxed finger conditions (thumb allowed), lower motion
+     threshold (palm-relative), continuous tracking of palm Y.
+   • Zoom: relaxed finger conditions, palm-relative delta threshold,
+     reduced cooldown.
+   • Click: tighter confirm to feel more responsive.
 """
 
 import time
@@ -16,18 +23,6 @@ from hand_tracker import HandTracker
 class GestureDetector:
     """
     Advanced gesture recognition engine with frame-confirmed detection.
-
-    Key accuracy features
-    ---------------------
-    * **Frame confirmation** – click / right-click require ≥ CONFIRM_FRAMES
-      consecutive frames of the same gesture before firing.
-    * **Palm-relative pinch threshold** – the pinch distance is scaled by
-      the current palm size so the threshold works at any hand-to-camera
-      distance.
-    * **Global action cooldown** – after any action fires, a cooldown period
-      prevents re-triggering within ACTION_COOLDOWN_SEC seconds.
-    * **Screenshot hold** – open palm must be held for SCREENSHOT_HOLD_FRAMES
-      consecutive frames.
 
     Gestures
     --------
@@ -46,17 +41,18 @@ class GestureDetector:
     """
 
     # ── Tuned thresholds ────────────────────────────────────────────────────
-    PINCH_RATIO            = 0.22   # pinch dist / palm size  (replaces px)
-    DOUBLE_CLICK_INTERVAL  = 0.35   # seconds between pinches
+    PINCH_RATIO            = 0.24   # pinch dist / palm size  (replaces px)
+    DOUBLE_CLICK_INTERVAL  = 0.40   # seconds between pinches
     DRAG_HOLD_FRAMES       = 10     # frames fist must be held before drag
     SCROLL_SENSITIVITY     = 3      # scroll ticks per detected motion
-    SCROLL_MOTION_THRESH   = 20     # px/frame to trigger scroll
-    SCROLL_COOLDOWN_FRAMES = 6      # frames between scroll repeats
-    ZOOM_COOLDOWN_FRAMES   = 8      # frames between zoom repeats
+    SCROLL_MOTION_RATIO    = 0.08   # palm-relative vertical delta to trigger scroll
+    SCROLL_COOLDOWN_FRAMES = 3      # frames between scroll repeats  (was 6)
+    ZOOM_DELTA_RATIO       = 0.06   # palm-relative change to trigger zoom
+    ZOOM_COOLDOWN_FRAMES   = 4      # frames between zoom repeats    (was 8)
 
     # ── Confirmation & cooldown ─────────────────────────────────────────────
     CONFIRM_FRAMES         = 2      # consecutive detections before firing
-    ACTION_COOLDOWN_SEC    = 0.18   # global cooldown between any actions
+    ACTION_COOLDOWN_SEC    = 0.15   # global cooldown between any actions
     SCREENSHOT_HOLD_FRAMES = 5      # palm must be held this many frames
 
     # ── Gesture name constants ──────────────────────────────────────────────
@@ -79,17 +75,18 @@ class GestureDetector:
         # Pinch / click state
         self._last_pinch_time      = 0
         self._pinch_active         = False
-        self._pinch_confirm_count  = 0      # consecutive pinch frames
-        self._right_click_confirm  = 0      # consecutive right-click frames
+        self._pinch_confirm_count  = 0
+        self._right_click_confirm  = 0
         self._right_click_done     = False
 
         # Drag state
         self._fist_frames          = 0
         self._dragging             = False
 
-        # Scroll state
+        # Scroll state  (continuous tracking)
         self._prev_palm_y          = None
         self._scroll_cooldown      = 0
+        self._scroll_confirm       = 0      # consecutive scroll-direction frames
 
         # Zoom state
         self._zoom_prev_dist       = None
@@ -116,7 +113,8 @@ class GestureDetector:
         """
         if landmarks is None:
             self._reset_drag()
-            self._prev_palm_y = None
+            self._prev_palm_y    = None
+            self._zoom_prev_dist = None
             return self.GESTURE_NONE, None, {}
 
         index_tip  = landmarks[HandTracker.INDEX_TIP]
@@ -145,20 +143,27 @@ class GestureDetector:
         if index_up and middle_up and ring_up and not pinky_up and not thumb_up:
             return self.GESTURE_PAUSE, index_tip, {}
 
-        # ── ZOOM : thumb + pinky spread ───────────────────────────────────
-        if thumb_up and pinky_up and not index_up and not middle_up and not ring_up:
-            result = self._detect_zoom(landmarks)
+        # ── ZOOM : thumb + pinky (other fingers relaxed – at most 1 extra)
+        # The key requirement is thumb + pinky up; index/middle/ring can
+        # be noisy so we allow at most one of them up.
+        extra_fingers = sum([index_up, middle_up, ring_up])
+        if thumb_up and pinky_up and extra_fingers <= 1:
+            result = self._detect_zoom(landmarks, palm_size)
             if result:
                 return result, index_tip, {}
 
-        # ── SCROLL : index + middle up, palm moving vertically ────────────
-        if index_up and middle_up and not ring_up and not pinky_up and not thumb_up:
-            result = self._detect_scroll(palm_cy)
+        # ── SCROLL : index + middle up (thumb is ALLOWED now) ─────────────
+        # Many people cannot comfortably tuck the thumb while scrolling,
+        # so we only require index+middle up, ring+pinky down.
+        if index_up and middle_up and not ring_up and not pinky_up:
+            result = self._detect_scroll(palm_cy, palm_size)
             if result:
                 return result, index_tip, {}
+            # Even if no scroll yet, keep tracking palm Y
             return self.GESTURE_NONE, index_tip, {}
 
-        self._prev_palm_y = palm_cy   # keep tracking for scroll
+        # Always keep palm Y up to date so scroll has fresh history
+        self._prev_palm_y = palm_cy
 
         # ── PINCH detection (click / double-click / right-click) ──────────
         pinch_dist = np.hypot(thumb_tip[0] - index_tip[0],
@@ -219,7 +224,7 @@ class GestureDetector:
                 return self.GESTURE_DRAG_END, (palm_cx, palm_cy), {}
             self._fist_frames = 0
 
-        # ── MOVE : only index up ──────────────────────────────────────────
+        # ── MOVE : only index up (thumb allowed – it's hard to tuck) ─────
         if index_up and not middle_up and not ring_up and not pinky_up:
             return self.GESTURE_MOVE, index_tip, {}
 
@@ -235,26 +240,45 @@ class GestureDetector:
         """Record that an action just fired."""
         self._last_action_time = time.time()
 
-    def _detect_scroll(self, palm_cy):
+    def _detect_scroll(self, palm_cy, palm_size):
+        """
+        Detect scroll by tracking vertical palm movement.
+        Uses palm-relative threshold so it works at any distance.
+        """
         if self._scroll_cooldown > 0:
             self._scroll_cooldown -= 1
+            # Still update position so we don't build up a huge delta
+            self._prev_palm_y = palm_cy
             return None
 
         if self._prev_palm_y is not None:
             delta = palm_cy - self._prev_palm_y
-            if abs(delta) > self.SCROLL_MOTION_THRESH:
+            # Palm-relative threshold (e.g. 8% of palm size, min 8px)
+            threshold = max(self.SCROLL_MOTION_RATIO * palm_size, 8)
+            if abs(delta) > threshold:
                 self._scroll_cooldown = self.SCROLL_COOLDOWN_FRAMES
                 self._prev_palm_y = palm_cy
                 if delta < 0:
                     return self.GESTURE_SCROLL_UP
                 else:
                     return self.GESTURE_SCROLL_DOWN
+
         self._prev_palm_y = palm_cy
         return None
 
-    def _detect_zoom(self, landmarks):
+    def _detect_zoom(self, landmarks, palm_size):
+        """
+        Detect zoom by tracking thumb-pinky spread distance.
+        Uses palm-relative delta threshold so it works at any distance.
+        """
         if self._zoom_cooldown > 0:
             self._zoom_cooldown -= 1
+            # Keep tracking so we don't accumulate stale deltas
+            thumb_tip = landmarks[HandTracker.THUMB_TIP]
+            pinky_tip = landmarks[HandTracker.PINKY_TIP]
+            self._zoom_prev_dist = np.hypot(
+                thumb_tip[0] - pinky_tip[0], thumb_tip[1] - pinky_tip[1]
+            )
             return None
 
         thumb_tip = landmarks[HandTracker.THUMB_TIP]
@@ -264,13 +288,16 @@ class GestureDetector:
 
         if self._zoom_prev_dist is not None:
             delta = dist - self._zoom_prev_dist
-            if abs(delta) > 18:
+            # Palm-relative threshold (e.g. 6% of palm size, min 10px)
+            threshold = max(self.ZOOM_DELTA_RATIO * palm_size, 10)
+            if abs(delta) > threshold:
                 self._zoom_cooldown  = self.ZOOM_COOLDOWN_FRAMES
                 self._zoom_prev_dist = dist
                 if delta > 0:
                     return self.GESTURE_ZOOM_IN
                 else:
                     return self.GESTURE_ZOOM_OUT
+
         self._zoom_prev_dist = dist
         return None
 
