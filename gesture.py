@@ -35,8 +35,12 @@ class GestureDetector:
     CONFIRM_FRAMES          = 2
     ACTION_COOLDOWN_SEC     = 0.12
 
-    DRAG_HOLD_FRAMES        = 5
+    DRAG_HOLD_FRAMES        = 8
     SCREENSHOT_HOLD_FRAMES  = 5
+
+    # Fist detection: fingertips must be within this ratio of palm_size
+    # from the palm center to count as a real fist (not just relaxed hand)
+    FIST_CURL_RATIO         = 0.75
 
     SCROLL_VELOCITY_THRESH  = 0.20
     SCROLL_ENTER_FRAMES     = 2
@@ -74,7 +78,6 @@ class GestureDetector:
         self._screenshot_done      = False
         self._last_action_time     = 0
 
-        # 3-frame buffer for majority-vote finger smoothing
         self._finger_buffer        = deque(maxlen=3)
 
     def _smooth_fingers(self, fingers):
@@ -88,6 +91,22 @@ class GestureDetector:
             smoothed.append(votes >= 2)
         return smoothed
 
+    def _is_fist(self, landmarks, palm_cx, palm_cy, palm_size):
+        """
+        Check if the hand is actually making a fist by verifying that
+        all four main fingertips are curled close to the palm center.
+        This prevents a relaxed or transitioning hand from being
+        detected as a fist.
+        """
+        tips = [HandTracker.INDEX_TIP, HandTracker.MIDDLE_TIP,
+                HandTracker.RING_TIP, HandTracker.PINKY_TIP]
+        for tip_id in tips:
+            tx, ty = landmarks[tip_id]
+            dist = np.hypot(tx - palm_cx, ty - palm_cy)
+            if dist > self.FIST_CURL_RATIO * palm_size:
+                return False
+        return True
+
     def detect(self, landmarks, fingers):
         """
         Returns (gesture_name, control_point, extra_data).
@@ -98,7 +117,6 @@ class GestureDetector:
             self._reset_on_hand_lost()
             return self.GESTURE_NONE, None, {}
 
-        # Smooth finger states to eliminate single-frame flickers
         fingers = self._smooth_fingers(fingers)
 
         index_tip  = landmarks[HandTracker.INDEX_TIP]
@@ -114,8 +132,8 @@ class GestureDetector:
         #   2. Pause       (thumb + pinky only)
         #   3. Zoom        (index + middle + ring up, vertical move)
         #   4. Scroll      (index + middle up, not ring, vertical move)
-        #   5. Drag        (fist -- all 4 main fingers down)
-        #   6. Pinch/Click (thumb + index close)
+        #   5. Pinch/Click (thumb + index close)
+        #   6. Drag        (real fist, all tips curled into palm)
         #   7. Move        (index only)
 
         # 1. SCREENSHOT
@@ -153,28 +171,7 @@ class GestureDetector:
         self._zoom_prev_palm_y   = palm_cy
         self._zoom_prev_time     = now
 
-        # 5. DRAG: all 4 main fingers down (thumb free -- thumb is
-        #    unreliable in a fist). Checked BEFORE pinch so a fist
-        #    doesn't accidentally trigger a click.
-        fist_pose = not index_up and not middle_up and not ring_up and not pinky_up
-        if fist_pose:
-            self._fist_frames += 1
-            if self._fist_frames >= self.DRAG_HOLD_FRAMES:
-                if not self._dragging:
-                    self._dragging = True
-                    return self.GESTURE_DRAG_START, (palm_cx, palm_cy), {}
-                else:
-                    return self.GESTURE_DRAG_MOVE, (palm_cx, palm_cy), {}
-            # During hold-up period, block other gestures
-            return self.GESTURE_NONE, index_tip, {}
-        else:
-            if self._dragging:
-                self._dragging    = False
-                self._fist_frames = 0
-                return self.GESTURE_DRAG_END, (palm_cx, palm_cy), {}
-            self._fist_frames = 0
-
-        # 6. PINCH (click / double-click / right-click)
+        # 5. PINCH (click / double-click / right-click)
         pinch_dist = np.hypot(thumb_tip[0] - index_tip[0],
                               thumb_tip[1] - index_tip[1])
         effective_threshold = max(self.PINCH_RATIO * palm_size, 18)
@@ -212,6 +209,25 @@ class GestureDetector:
 
         if not is_pinching:
             self._pinch_active = False
+
+        # 6. DRAG: real fist -- all 4 main fingers curled into the palm.
+        #    Uses distance-based curl check, not just binary up/down,
+        #    so a relaxed hand won't falsely trigger drag.
+        real_fist = self._is_fist(landmarks, palm_cx, palm_cy, palm_size)
+        if real_fist:
+            self._fist_frames += 1
+            if self._fist_frames >= self.DRAG_HOLD_FRAMES:
+                if not self._dragging:
+                    self._dragging = True
+                    return self.GESTURE_DRAG_START, (palm_cx, palm_cy), {}
+                else:
+                    return self.GESTURE_DRAG_MOVE, (palm_cx, palm_cy), {}
+        else:
+            if self._dragging:
+                self._dragging    = False
+                self._fist_frames = 0
+                return self.GESTURE_DRAG_END, (palm_cx, palm_cy), {}
+            self._fist_frames = 0
 
         # 7. MOVE: index up (thumb allowed)
         if index_up and not middle_up and not ring_up and not pinky_up:

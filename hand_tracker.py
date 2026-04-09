@@ -104,7 +104,7 @@ class HandTracker:
         mcps = [self.THUMB_MCP, self.INDEX_MCP, self.MIDDLE_MCP,
                 self.RING_MCP, self.PINKY_MCP]
 
-        TOLERANCE = 8
+        TOLERANCE = 5
 
         up = []
         for i, (tip_id, pip_id, mcp_id) in enumerate(zip(tips, pips, mcps)):
