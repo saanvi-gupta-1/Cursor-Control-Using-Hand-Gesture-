@@ -1,39 +1,26 @@
 """
-Advanced Gesture Cursor Control v2
-====================================
-Control your entire computer in real time using hand gestures.
+Advanced Gesture Cursor Control
+================================
+Control your computer in real time using hand gestures.
 
-v2 — Advanced Technologies
---------------------------
-* **1€ (One Euro) Filter** — the gold-standard adaptive cursor smoother
-  from CHI 2012.  Eliminates jitter at rest while preserving responsiveness
-  during fast movement.  Replaces the old Holt double-exponential.
-* **Stabilized control point** — blends index tip (precise) with DIP
-  (stable) for a 75/25 weighted average that cuts fingertip jitter.
-* **Velocity-proportional scroll** — scroll amount scales with how fast
-  you move your hand.  Slow movement = fine scroll, fast = page jump.
-* **Velocity-proportional zoom** — same proportional feel for zoom.
-* **Gesture hysteresis** — entering scroll/zoom mode takes 2 frames,
-  but exiting takes 6 frames, so brief detection drop-outs don't
-  interrupt your gesture.
-* **Adaptive dead-zone** — the dead-zone shrinks when you are moving
-  fast and grows when you are nearly still.
+Uses the One Euro Filter for adaptive cursor smoothing (CHI 2012),
+a stabilized control point blending index tip and DIP,
+velocity-proportional scroll and zoom, gesture hysteresis,
+and an adaptive dead-zone.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  GESTURE CHEAT SHEET
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  ☝️  Index finger only       → Move cursor
-  🤏  Pinch (thumb+index)    → Left click
-  🤏🤏 Two quick pinches      → Double click
-  🤏✌  Pinch + middle up     → Right click
-  ✌️  2 fingers + move up/dn → Scroll up / down
-  🖖  3 fingers + move UP    → Zoom in  (Ctrl ++)
-  🖖  3 fingers + move DOWN  → Zoom out (Ctrl --)
-  ✊  Closed fist (hold)     → Drag & drop
-  🖐  Open palm (hold ~0.2s) → Screenshot
-  🤙  Thumb + pinky (shaka)  → Pause / freeze cursor
-  Q                          → Quit
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Gesture Reference
+-----------------
+  Index finger only       -> Move cursor
+  Pinch (thumb+index)     -> Left click
+  Two quick pinches       -> Double click
+  Pinch + middle up       -> Right click
+  2 fingers + move up/dn  -> Scroll up / down
+  3 fingers + move up     -> Zoom in  (Ctrl ++)
+  3 fingers + move down   -> Zoom out (Ctrl --)
+  Closed fist (hold)      -> Drag and drop
+  Open palm (hold ~0.2s)  -> Screenshot
+  Thumb + pinky (shaka)   -> Pause / freeze cursor
+  Q                       -> Quit
 """
 
 import cv2
@@ -47,15 +34,15 @@ from hand_tracker import HandTracker
 from gesture import GestureDetector
 from filters import OneEuroFilter2D
 
-# ── Config ──────────────────────────────────────────────────────────────────
+# -- Config -------------------------------------------------------------------
 WEBCAM_ID        = 0
 FRAME_W, FRAME_H = 640, 480
 
-# One Euro Filter tuning (the key smoothing parameters)
+# One Euro Filter tuning
 OEF_FREQ         = 30.0     # expected camera FPS
-OEF_MIN_CUTOFF   = 1.5      # Hz – lower = smoother at rest  (try 0.5–3.0)
-OEF_BETA         = 0.05     # speed coeff – higher = less lag at speed (try 0.01–0.1)
-OEF_D_CUTOFF     = 1.0      # derivative filter cutoff (usually 1.0)
+OEF_MIN_CUTOFF   = 1.5      # Hz - lower = smoother at rest
+OEF_BETA         = 0.05     # speed coefficient - higher = less lag at speed
+OEF_D_CUTOFF     = 1.0      # derivative filter cutoff
 
 # Screen mapping
 MARGIN           = 50       # ignore-zone near frame edges (pixels)
@@ -63,12 +50,12 @@ MARGIN           = 50       # ignore-zone near frame edges (pixels)
 # Scroll / zoom
 SCROLL_BASE      = 3        # base scroll lines per tick
 SCROLL_MAX       = 20       # max scroll lines per tick
-SCROLL_GAIN      = 8.0      # velocity → scroll-lines multiplier
+SCROLL_GAIN      = 8.0      # velocity to scroll-lines multiplier
 ZOOM_INTERVAL    = 0.10     # min seconds between zoom key presses
 
 # Dead zone (adaptive)
-DEAD_ZONE_MIN    = 1        # minimum dead zone (px) – during fast movement
-DEAD_ZONE_MAX    = 5        # maximum dead zone (px) – when nearly still
+DEAD_ZONE_MIN    = 1        # minimum dead zone (px) during fast movement
+DEAD_ZONE_MAX    = 5        # maximum dead zone (px) when nearly still
 SPEED_THRESHOLD  = 50       # cursor speed (px/frame) dividing fast vs slow
 
 GESTURE_LOG_LEN  = 6
@@ -78,9 +65,9 @@ SCREENSHOT_DIR   = os.path.expanduser("~/Desktop")
 TIP_WEIGHT       = 0.75     # 1.0 = pure tip (precise but jittery)
 
 pyautogui.FAILSAFE = False
-pyautogui.PAUSE    = 0       # ZERO pause – critical for responsiveness
+pyautogui.PAUSE    = 0
 
-# ── Color palette (BGR) ────────────────────────────────────────────────────
+# -- Color palette (BGR) ------------------------------------------------------
 COLORS = {
     "move":         (0,   255, 120),
     "click":        (0,   200, 255),
@@ -98,7 +85,7 @@ COLORS = {
     "none":         (160, 160, 160),
 }
 
-EMOJI = {
+LABELS = {
     "move":         "MOVE",
     "click":        "CLICK",
     "double_click": "DBL CLICK",
@@ -110,18 +97,18 @@ EMOJI = {
     "scroll_down":  "SCROLL DOWN",
     "zoom_in":      "ZOOM IN",
     "zoom_out":     "ZOOM OUT",
-    "screenshot":   "SCREENSHOT!",
+    "screenshot":   "SCREENSHOT",
     "pause":        "PAUSED",
     "none":         "...",
 }
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
+# -- Helpers -------------------------------------------------------------------
 
 def map_to_screen(x, y, frame_w, frame_h, screen_w, screen_h, margin=MARGIN):
-    """Map webcam coords (with margin buffer) → full screen coordinates."""
-    x  = np.clip(x, margin, frame_w - margin)
-    y  = np.clip(y, margin, frame_h - margin)
+    """Map webcam coords (with margin buffer) to full screen coordinates."""
+    x = np.clip(x, margin, frame_w - margin)
+    y = np.clip(y, margin, frame_h - margin)
     sx = np.interp(x, [margin, frame_w - margin], [0, screen_w])
     sy = np.interp(y, [margin, frame_h - margin], [0, screen_h])
     return float(sx), float(sy)
@@ -147,7 +134,7 @@ def draw_gesture_log(frame, log):
         alpha = max(0, 1.0 - age / 3.0)
         color = COLORS.get(g, (160, 160, 160))
         faded = tuple(int(c * alpha) for c in color)
-        label = EMOJI.get(g, g.upper())
+        label = LABELS.get(g, g.upper())
         y     = 40 + i * 22
         cv2.putText(frame, label, (x_start, y),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, faded, 1, cv2.LINE_AA)
@@ -155,17 +142,17 @@ def draw_gesture_log(frame, log):
 
 def draw_hud(frame, gesture, paused, sx, sy, fps, dragging, log,
              scroll_active, zoom_active):
-    """Draw full professional HUD overlay."""
+    """Draw HUD overlay on the camera frame."""
     h, w = frame.shape[:2]
 
-    # ── Top bar with gradient ────────────────────────────────────────────
+    # Top bar with dark overlay
     overlay = frame.copy()
     for row in range(80):
         cv2.rectangle(overlay, (0, row), (w, row + 1), (10, 10, 20), -1)
     cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
 
     color = COLORS.get(gesture, (255, 255, 255))
-    label = EMOJI.get(gesture, gesture.upper().replace("_", " "))
+    label = LABELS.get(gesture, gesture.upper().replace("_", " "))
 
     # Gesture indicator dot
     cv2.circle(frame, (22, 30), 8, color, -1, cv2.LINE_AA)
@@ -198,18 +185,23 @@ def draw_hud(frame, gesture, paused, sx, sy, fps, dragging, log,
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1, cv2.LINE_AA)
 
     # FPS top-right
-    fps_color = (100, 255, 100) if fps >= 24 else (0, 200, 255) if fps >= 15 else (0, 80, 255)
+    if fps >= 24:
+        fps_color = (100, 255, 100)
+    elif fps >= 15:
+        fps_color = (0, 200, 255)
+    else:
+        fps_color = (0, 80, 255)
     cv2.putText(frame, f"FPS {fps:.0f}", (w - 95, 22),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.55, fps_color, 1, cv2.LINE_AA)
 
-    # Filter indicator
+    # Filter label
     cv2.putText(frame, "1-EURO", (w - 95, 42),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.35, (120, 120, 200), 1, cv2.LINE_AA)
 
     # Gesture log sidebar
     draw_gesture_log(frame, log)
 
-    # ── Bottom help bar ──────────────────────────────────────────────────
+    # Bottom help bar
     overlay2 = frame.copy()
     cv2.rectangle(overlay2, (0, h - 28), (w, h), (10, 10, 20), -1)
     cv2.addWeighted(overlay2, 0.7, frame, 0.3, 0, frame)
@@ -230,41 +222,43 @@ def draw_cursor_dot(frame, tip, gesture):
     if tip is None:
         return
     color = COLORS.get(gesture, (255, 255, 255))
-    cv2.circle(frame, tip, 7,  color,            -1, cv2.LINE_AA)
-    cv2.circle(frame, tip, 11, (255, 255, 255),   1, cv2.LINE_AA)
-    cv2.circle(frame, tip, 16, (*color[:2], max(color[2] // 2, 40)), 1, cv2.LINE_AA)
+    cv2.circle(frame, tip, 7, color, -1, cv2.LINE_AA)
+    cv2.circle(frame, tip, 11, (255, 255, 255), 1, cv2.LINE_AA)
+    outer = (color[0], color[1], max(color[2] // 2, 40))
+    cv2.circle(frame, tip, 16, outer, 1, cv2.LINE_AA)
 
 
-# ── Main ─────────────────────────────────────────────────────────────────────
+# -- Main ---------------------------------------------------------------------
 
 def main():
     screen_w, screen_h = pyautogui.size()
 
     def open_camera():
         for cam_id in [WEBCAM_ID, 0, 1, 2]:
-            print(f"📷  Trying camera ID {cam_id}...")
+            print(f"  Trying camera ID {cam_id}...")
             c = cv2.VideoCapture(cam_id, cv2.CAP_DSHOW)
             if c.isOpened():
-                c.set(cv2.CAP_PROP_FRAME_WIDTH,  FRAME_W)
+                c.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_W)
                 c.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_H)
                 c.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 c.set(cv2.CAP_PROP_FPS, 30)
+                # Warm up the camera - discard first few frames
                 for _ in range(5):
                     c.read()
-                print(f"✅  Camera ID {cam_id} opened successfully.")
+                print(f"  Camera ID {cam_id} opened successfully.")
                 return c
             c.release()
         return None
 
     cap = open_camera()
     if cap is None:
-        print("❌  Could not open any webcam. Make sure no other app is using it.")
+        print("  Could not open any webcam. Make sure no other app is using it.")
         sys.exit(1)
 
     tracker  = HandTracker(max_hands=1)
     detector = GestureDetector()
 
-    # ── 1€ Filter for cursor ────────────────────────────────────────────────
+    # One Euro Filter for cursor smoothing
     cursor_filter = OneEuroFilter2D(
         freq=OEF_FREQ,
         min_cutoff=OEF_MIN_CUTOFF,
@@ -283,24 +277,23 @@ def main():
 
     # Timing
     last_zoom_time      = 0
-    last_scroll_time    = 0
     fps_buffer          = deque(maxlen=30)
     prev_time           = time.time()
 
     print(__doc__)
-    print("✅  Starting... Press Q in the webcam window to quit.\n")
+    print("  Starting... Press Q in the webcam window to quit.\n")
 
     while True:
         ok, frame = cap.read()
         if not ok:
             frame_fail_count += 1
             if frame_fail_count >= MAX_FRAME_FAILS:
-                print("⚠  Too many frame failures. Reopening camera...")
+                print("  Too many frame failures. Reopening camera...")
                 cap.release()
                 time.sleep(1)
                 cap = open_camera()
                 if cap is None:
-                    print("❌  Camera lost. Exiting.")
+                    print("  Camera lost. Exiting.")
                     break
                 frame_fail_count = 0
             time.sleep(0.05)
@@ -328,9 +321,9 @@ def main():
             if not gesture_log or gesture_log[-1][0] != gesture:
                 gesture_log.append((gesture, time.time()))
 
-        # ── Execute actions ────────────────────────────────────────────────
+        # -- Execute actions ---------------------------------------------------
         if tip and not paused:
-            # ── Stabilized control point : blend tip + DIP ─────────────────
+            # Stabilized control point: blend tip + DIP
             stable_tip = tracker.get_stable_control_point(landmarks, TIP_WEIGHT)
             if stable_tip is None:
                 stable_tip = tip
@@ -341,12 +334,12 @@ def main():
                 FRAME_W, FRAME_H, screen_w, screen_h,
             )
 
-            # ── 1€ Filter ─────────────────────────────────────────────────
+            # One Euro Filter
             filtered_x, filtered_y = cursor_filter(raw_sx, raw_sy, now)
             sx = int(np.clip(filtered_x, 0, screen_w - 1))
             sy = int(np.clip(filtered_y, 0, screen_h - 1))
 
-            # ── Adaptive dead-zone ────────────────────────────────────────
+            # Adaptive dead-zone
             speed = np.hypot(sx - prev_sx, sy - prev_sy)
             dead_zone = int(np.interp(speed,
                                       [0, SPEED_THRESHOLD],
@@ -354,7 +347,7 @@ def main():
             if abs(sx - prev_sx) < dead_zone and abs(sy - prev_sy) < dead_zone:
                 sx, sy = prev_sx, prev_sy
 
-            # ── Gesture actions ───────────────────────────────────────────
+            # -- Gesture actions -----------------------------------------------
             if gesture == GestureDetector.GESTURE_MOVE:
                 pyautogui.moveTo(sx, sy)
 
@@ -381,7 +374,6 @@ def main():
 
             elif gesture in (GestureDetector.GESTURE_SCROLL_UP,
                              GestureDetector.GESTURE_SCROLL_DOWN):
-                # Velocity-proportional scroll
                 vel = extra.get("velocity", 1.0)
                 amount = int(np.clip(SCROLL_BASE + vel * SCROLL_GAIN,
                                      SCROLL_BASE, SCROLL_MAX))
@@ -415,7 +407,7 @@ def main():
             pyautogui.mouseUp()
             dragging = False
 
-        # ── Draw ──────────────────────────────────────────────────────────
+        # -- Draw --------------------------------------------------------------
         draw_cursor_dot(frame, tip, gesture)
         draw_hud(frame, gesture, paused, sx, sy, fps, dragging, gesture_log,
                  detector._scroll_active, detector._zoom_active)
@@ -432,7 +424,7 @@ def main():
                         (FRAME_W // 2 - 150, FRAME_H // 2),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2, cv2.LINE_AA)
 
-        cv2.imshow("Advanced Gesture Control", frame)
+        cv2.imshow("Gesture Cursor Control", frame)
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
@@ -442,7 +434,7 @@ def main():
         pyautogui.mouseUp()
     cap.release()
     cv2.destroyAllWindows()
-    print("👋  Exited cleanly.")
+    print("  Exited cleanly.")
 
 
 if __name__ == "__main__":

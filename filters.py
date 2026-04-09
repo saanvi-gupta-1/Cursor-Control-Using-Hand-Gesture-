@@ -1,27 +1,24 @@
 """
 Signal Processing Filters
 ==========================
-Production-grade adaptive signal filters for real-time hand tracking.
+Adaptive signal filters for real-time hand tracking.
 
-Implements the **1€ (One Euro) Filter** — the industry-standard algorithm
-for reducing jitter in interactive cursor/pointing systems while
-preserving low-latency responsiveness.
+Implements the One Euro Filter, an algorithm for reducing jitter in
+interactive cursor/pointing systems while preserving low-latency
+responsiveness.
 
-Reference
----------
-Géry Casiez, Nicolas Roussel, Daniel Vogel.
-"1€ Filter: A Simple Speed-based Low-pass Filter for Noisy Input
- in Interactive Systems." CHI 2012.
+Reference: Casiez, Roussel, Vogel. "1 Euro Filter: A Simple Speed-based
+Low-pass Filter for Noisy Input in Interactive Systems." CHI 2012.
 
-The core idea: **adapt the smoothing cutoff based on input speed**.
-  – Slow movement → low cutoff → heavy smoothing → no jitter
-  – Fast movement → high cutoff → light smoothing → no lag
+Core idea: adapt the smoothing cutoff based on input speed.
+  Slow movement -> low cutoff -> heavy smoothing -> no jitter
+  Fast movement -> high cutoff -> light smoothing -> no lag
 """
 
 import numpy as np
 
 
-# ─── Low-Pass Filter (building block) ──────────────────────────────────────
+# --- Low-Pass Filter (building block) ----------------------------------------
 
 class LowPassFilter:
     """First-order exponential low-pass filter (IIR)."""
@@ -50,20 +47,20 @@ class LowPassFilter:
         return self._s
 
 
-# ─── 1€ Filter ─────────────────────────────────────────────────────────────
+# --- One Euro Filter ----------------------------------------------------------
 
 class OneEuroFilter:
     """
-    1€ (One Euro) adaptive low-pass filter for a single scalar signal.
+    One Euro adaptive low-pass filter for a single scalar signal.
 
     Parameters
     ----------
     freq : float
         Initial estimate of signal frequency (fps). Auto-updates each call.
     min_cutoff : float
-        Minimum cutoff frequency (Hz).  Lower → more smoothing at low speed.
+        Minimum cutoff frequency (Hz). Lower = more smoothing at low speed.
     beta : float
-        Speed coefficient.  Higher → less lag during fast movement.
+        Speed coefficient. Higher = less lag during fast movement.
     d_cutoff : float
         Cutoff for the derivative low-pass filter. Usually 1.0.
     """
@@ -105,21 +102,20 @@ class OneEuroFilter:
         # Smoothed derivative
         edx = self._dx_filt(dx, self._alpha(self.d_cutoff, self.freq))
 
-        # Adaptive cutoff: faster movement → higher cutoff → less smoothing
+        # Adaptive cutoff: faster movement -> higher cutoff -> less smoothing
         cutoff = self.min_cutoff + self.beta * abs(edx)
 
         # Filter the signal
         return self._x_filt(x, self._alpha(cutoff, self.freq))
 
 
-# ─── 2-D One Euro Filter ───────────────────────────────────────────────────
+# --- 2-D One Euro Filter -----------------------------------------------------
 
 class OneEuroFilter2D:
     """
-    Independent 1€ filters for X and Y axes.
+    Independent One Euro filters for X and Y axes.
 
-    Usage::
-
+    Usage:
         f = OneEuroFilter2D(freq=30, min_cutoff=1.0, beta=0.05)
         sx, sy = f(raw_x, raw_y)          # auto-timestamps
         sx, sy = f(raw_x, raw_y, t=now)   # explicit timestamp
@@ -137,7 +133,7 @@ class OneEuroFilter2D:
         return self.fx(x, t), self.fy(y, t)
 
 
-# ─── Exponential Moving Average ────────────────────────────────────────────
+# --- Exponential Moving Average -----------------------------------------------
 
 class EMA:
     """Simple exponential moving average for scalar signals."""

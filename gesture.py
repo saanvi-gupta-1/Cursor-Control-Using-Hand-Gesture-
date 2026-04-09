@@ -1,21 +1,20 @@
 """
-Gesture Detection Engine v3
-============================
-Production-grade gesture recognition with EASY gestures.
+Gesture Detection Engine
+========================
+Gesture recognition with state-machine hysteresis for scroll and zoom,
+velocity-based proportional control, and palm-relative adaptive thresholds.
 
-v3 — Easier gesture mappings
------------------------------
-  • Zoom uses 3 fingers (index+middle+ring) + vertical hand movement.
-    Move UP = zoom in, move DOWN = zoom out.  No more awkward thumb-pinky!
-  • Drag activates in 4 frames instead of 8.
-  • Pause changed from 3 fingers to thumb+pinky (shaka sign).
-  • Scroll stays the same: 2 fingers + vertical movement.
-
-Technology
-----------
-  • State machine with hysteresis for scroll and zoom.
-  • Velocity-based EMA for proportional scroll/zoom speed.
-  • Palm-relative thresholds — works at any distance from camera.
+Gesture Mappings
+----------------
+  1 finger  (index)                -> Move cursor
+  Pinch     (thumb + index close)  -> Left click
+  Two quick pinches                -> Double click
+  Pinch + middle up                -> Right click
+  2 fingers (index+middle) + move  -> Scroll up/down
+  3 fingers (i+m+ring)   + move    -> Zoom in (up) / out (down)
+  Fist      (hold ~0.15s)          -> Drag and drop
+  5 fingers (palm, hold)           -> Screenshot
+  Thumb + pinky (shaka)            -> Pause / freeze cursor
 """
 
 import time
@@ -27,22 +26,14 @@ from filters import EMA
 
 class GestureDetector:
     """
-    Gesture recognition engine with easy, intuitive gestures.
+    Gesture recognition engine with intuitive hand-pose mappings.
 
-    Gesture Map (by finger count / pose)
-    -------------------------------------
-      ☝️  1 finger  (index)                → Move cursor
-      🤏  Pinch     (thumb + index close)  → Left click
-      🤏🤏 Two quick pinches              → Double click
-      🤏✌ Pinch + middle up               → Right click
-      ✌️  2 fingers (index+middle) + move  → Scroll up/down
-      🖖  3 fingers (i+m+ring)   + move   → Zoom in (up) / out (down)
-      ✊  Fist     (hold ~0.15s)           → Drag & drop
-      🖐  5 fingers (palm, hold)           → Screenshot
-      🤙  Thumb + pinky (shaka)            → Pause / freeze cursor
+    Uses frame-counting for gesture confirmation, cooldowns to prevent
+    accidental repeat-fires, and state machines with hysteresis for
+    continuous gestures (scroll, zoom).
     """
 
-    # ── Gesture name constants ──────────────────────────────────────────────
+    # Gesture name constants
     GESTURE_NONE         = "none"
     GESTURE_MOVE         = "move"
     GESTURE_CLICK        = "click"
@@ -58,38 +49,38 @@ class GestureDetector:
     GESTURE_SCREENSHOT   = "screenshot"
     GESTURE_PAUSE        = "pause"
 
-    # ── Tuned thresholds ────────────────────────────────────────────────────
+    # Tuned thresholds
     PINCH_RATIO             = 0.24
     DOUBLE_CLICK_INTERVAL   = 0.40
     CONFIRM_FRAMES          = 2
     ACTION_COOLDOWN_SEC     = 0.12
 
-    DRAG_HOLD_FRAMES        = 4      # ← was 8, now much faster
+    DRAG_HOLD_FRAMES        = 4
     SCREENSHOT_HOLD_FRAMES  = 5
 
-    # ── Scroll parameters ───────────────────────────────────────────────────
+    # Scroll parameters
     SCROLL_VELOCITY_THRESH  = 0.4
     SCROLL_ENTER_FRAMES     = 2
     SCROLL_EXIT_FRAMES      = 6
 
-    # ── Zoom parameters (now uses vertical movement, same as scroll) ───────
-    ZOOM_VELOCITY_THRESH    = 0.35   # slightly more sensitive than scroll
+    # Zoom parameters (uses vertical movement, same approach as scroll)
+    ZOOM_VELOCITY_THRESH    = 0.35
     ZOOM_ENTER_FRAMES       = 2
     ZOOM_EXIT_FRAMES        = 6
 
     def __init__(self):
-        # ── Pinch / click ───────────────────────────────────────────────────
+        # Pinch / click state
         self._last_pinch_time      = 0
         self._pinch_active         = False
         self._pinch_confirm_count  = 0
         self._right_click_confirm  = 0
         self._right_click_done     = False
 
-        # ── Drag ────────────────────────────────────────────────────────────
+        # Drag state
         self._fist_frames          = 0
         self._dragging             = False
 
-        # ── Scroll state machine ────────────────────────────────────────────
+        # Scroll state machine
         self._scroll_active        = False
         self._scroll_enter_count   = 0
         self._scroll_exit_count    = 0
@@ -97,7 +88,7 @@ class GestureDetector:
         self._scroll_prev_time     = None
         self._scroll_velocity_ema  = EMA(alpha=0.35)
 
-        # ── Zoom state machine (vertical movement, like scroll) ─────────────
+        # Zoom state machine (vertical movement, like scroll)
         self._zoom_active          = False
         self._zoom_enter_count     = 0
         self._zoom_exit_count      = 0
@@ -105,26 +96,24 @@ class GestureDetector:
         self._zoom_prev_time       = None
         self._zoom_velocity_ema    = EMA(alpha=0.35)
 
-        # ── Screenshot ──────────────────────────────────────────────────────
+        # Screenshot
         self._screenshot_hold      = 0
         self._screenshot_done      = False
 
-        # ── Global cooldown ─────────────────────────────────────────────────
+        # Global cooldown
         self._last_action_time     = 0
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # -------------------------------------------------------------------------
     #  PUBLIC API
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # -------------------------------------------------------------------------
 
     def detect(self, landmarks, fingers):
         """
         Main detection entry point.
 
-        Returns
-        -------
-        (gesture_name, control_point, extra_data)
+        Returns (gesture_name, control_point, extra_data)
             control_point : (x, y) pixel position to anchor cursor
-            extra_data    : dict – may contain 'velocity' for scroll/zoom
+            extra_data    : dict, may contain 'velocity' for scroll/zoom
         """
         now = time.time()
 
@@ -141,18 +130,16 @@ class GestureDetector:
         thumb_up, index_up, middle_up, ring_up, pinky_up = fingers
         finger_count = sum(fingers)
 
-        # ╔══════════════════════════════════════════════════════════════════╗
-        # ║  GESTURE PRIORITY ORDER                                        ║
-        # ║  1. Screenshot  (5 fingers, held)                              ║
-        # ║  2. Pause       (thumb + pinky only — shaka sign)              ║
-        # ║  3. Zoom        (3 fingers: index+middle+ring + move up/down)  ║
-        # ║  4. Scroll      (2 fingers: index+middle + move up/down)       ║
-        # ║  5. Pinch/Click (thumb+index close)                            ║
-        # ║  6. Drag        (fist — 0 fingers)                             ║
-        # ║  7. Move        (index only)                                   ║
-        # ╚══════════════════════════════════════════════════════════════════╝
+        # Priority order:
+        #   1. Screenshot  (5 fingers, held)
+        #   2. Pause       (thumb + pinky only, shaka sign)
+        #   3. Zoom        (3 fingers: index+middle+ring + move up/down)
+        #   4. Scroll      (2 fingers: index+middle + move up/down)
+        #   5. Pinch/Click (thumb+index close)
+        #   6. Drag        (fist, 0 fingers)
+        #   7. Move        (index only)
 
-        # ── 1. SCREENSHOT : all 5 up, held for N frames ──────────────────
+        # 1. SCREENSHOT: all 5 fingers up, held for N frames
         if finger_count == 5:
             self._screenshot_hold += 1
             if (self._screenshot_hold >= self.SCREENSHOT_HOLD_FRAMES
@@ -165,31 +152,31 @@ class GestureDetector:
             self._screenshot_hold = 0
             self._screenshot_done = False
 
-        # ── 2. PAUSE : thumb + pinky up, others down (shaka sign) ────────
+        # 2. PAUSE: thumb + pinky up, others down (shaka sign)
         if thumb_up and pinky_up and not index_up and not middle_up and not ring_up:
             return self.GESTURE_PAUSE, index_tip, {}
 
-        # ── 3. ZOOM : index + middle + ring up, NOT pinky (thumb free) ───
+        # 3. ZOOM: index + middle + ring up, NOT pinky (thumb free)
         #    Move hand UP = zoom in,  DOWN = zoom out
         zoom_pose = index_up and middle_up and ring_up and not pinky_up
         zoom_result = self._update_zoom_state(zoom_pose, palm_cy, palm_size, now)
         if zoom_result is not None:
             return zoom_result[0], index_tip, zoom_result[1]
 
-        # ── 4. SCROLL : index + middle up, NOT ring, NOT pinky ───────────
-        #    (thumb is free — many people can't tuck it)
+        # 4. SCROLL: index + middle up, NOT ring, NOT pinky
+        #    (thumb is free, many people can't tuck it)
         scroll_pose = index_up and middle_up and not ring_up and not pinky_up
         scroll_result = self._update_scroll_state(scroll_pose, palm_cy, palm_size, now)
         if scroll_result is not None:
             return scroll_result[0], index_tip, scroll_result[1]
 
-        # Always keep palm Y fresh for next frame
+        # Keep palm Y fresh for next frame when neither scroll nor zoom is active
         self._scroll_prev_palm_y = palm_cy
         self._scroll_prev_time   = now
         self._zoom_prev_palm_y   = palm_cy
         self._zoom_prev_time     = now
 
-        # ── 5. PINCH detection (click / double-click / right-click) ───────
+        # 5. PINCH detection (click / double-click / right-click)
         pinch_dist = np.hypot(thumb_tip[0] - index_tip[0],
                               thumb_tip[1] - index_tip[1])
         effective_threshold = max(self.PINCH_RATIO * palm_size, 18)
@@ -230,7 +217,7 @@ class GestureDetector:
         if not is_pinching:
             self._pinch_active = False
 
-        # ── 6. DRAG : closed fist (0 fingers) ────────────────────────────
+        # 6. DRAG: closed fist (0 fingers)
         if finger_count == 0:
             self._fist_frames += 1
             if self._fist_frames >= self.DRAG_HOLD_FRAMES:
@@ -246,15 +233,15 @@ class GestureDetector:
                 return self.GESTURE_DRAG_END, (palm_cx, palm_cy), {}
             self._fist_frames = 0
 
-        # ── 7. MOVE : index up (thumb allowed) ───────────────────────────
+        # 7. MOVE: index up (thumb allowed)
         if index_up and not middle_up and not ring_up and not pinky_up:
             return self.GESTURE_MOVE, index_tip, {}
 
         return self.GESTURE_NONE, index_tip, {}
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # -------------------------------------------------------------------------
     #  SCROLL STATE MACHINE
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # -------------------------------------------------------------------------
 
     def _update_scroll_state(self, pose_active, palm_cy, palm_size, now):
         """State machine for scroll with enter/exit hysteresis."""
@@ -305,9 +292,9 @@ class GestureDetector:
 
         return (self.GESTURE_NONE, {})
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    #  ZOOM STATE MACHINE  (vertical movement — just like scroll)
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # -------------------------------------------------------------------------
+    #  ZOOM STATE MACHINE (vertical movement, same approach as scroll)
+    # -------------------------------------------------------------------------
 
     def _update_zoom_state(self, pose_active, palm_cy, palm_size, now):
         """State machine for zoom with enter/exit hysteresis."""
@@ -358,17 +345,17 @@ class GestureDetector:
         if abs(smooth_vel) > self.ZOOM_VELOCITY_THRESH:
             magnitude = abs(smooth_vel)
             if smooth_vel < 0:
-                # Hand moving UP in frame → zoom IN
+                # Hand moving UP in frame -> zoom IN
                 return (self.GESTURE_ZOOM_IN, {"velocity": magnitude})
             else:
-                # Hand moving DOWN in frame → zoom OUT
+                # Hand moving DOWN in frame -> zoom OUT
                 return (self.GESTURE_ZOOM_OUT, {"velocity": magnitude})
 
         return (self.GESTURE_NONE, {})
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # -------------------------------------------------------------------------
     #  HELPERS
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # -------------------------------------------------------------------------
 
     def _can_act(self):
         return (time.time() - self._last_action_time) >= self.ACTION_COOLDOWN_SEC

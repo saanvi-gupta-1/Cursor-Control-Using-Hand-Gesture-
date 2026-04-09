@@ -1,14 +1,10 @@
 """
-Hand Tracking Module v2
-=======================
+Hand Tracking Module
+====================
 Wraps MediaPipe Hands for real-time hand landmark detection.
 
-v2 Changes
-----------
-* Lower detection/tracking confidence → more consistent tracking
-* Stable control point getter (tip + DIP blend) → less fingertip jitter
-* Finger-up detection with angular tolerance → fewer false flickers
-* Palm geometry helpers used by gesture engine
+Provides landmark extraction, finger-up detection with angular tolerance,
+stable control point blending (tip + DIP), and palm geometry helpers.
 """
 
 import mediapipe as mp
@@ -20,12 +16,10 @@ class HandTracker:
     """
     Real-time hand landmark tracker using MediaPipe.
 
-    Features
-    --------
-    * Configurable detection / tracking confidence
-    * Angle-aware finger-up detection (handles both left and right hands)
-    * **Stable control point** — blends index tip with DIP for reduced jitter
-    * Helper methods for distance, midpoint, palm geometry
+    - Configurable detection / tracking confidence
+    - Angle-aware finger-up detection (handles both left and right hands)
+    - Stable control point blending index tip with DIP for reduced jitter
+    - Helper methods for distance, midpoint, palm geometry
     """
 
     # MediaPipe landmark indices
@@ -54,9 +48,8 @@ class HandTracker:
     def __init__(self, max_hands=1, detection_confidence=0.7,
                  tracking_confidence=0.6):
         """
-        Lower confidence thresholds than default — improves tracking
-        continuity so the hand isn't "lost" during fast movement or
-        partial occlusion.
+        Lower confidence thresholds than default to improve tracking
+        continuity during fast movement or partial occlusion.
         """
         self.mp_hands  = mp.solutions.hands
         self.mp_draw   = mp.solutions.drawing_utils
@@ -110,7 +103,7 @@ class HandTracker:
 
     def get_landmarks_3d(self, results, frame_shape, hand_index=0):
         """
-        Return pixel-space landmarks WITH z-depth as {id: (x, y, z)}.
+        Return pixel-space landmarks with z-depth as {id: (x, y, z)}.
         z is the raw MediaPipe relative depth (negative = closer to camera).
         """
         if not results.multi_hand_landmarks:
@@ -139,9 +132,9 @@ class HandTracker:
         Return a stabilized cursor control point by blending
         the jittery index TIP with the more stable index DIP.
 
-        tip_weight : how much to trust the tip (default 0.75)
-            – 1.0 = pure tip (precise but jittery)
-            – 0.5 = 50/50 blend (very stable but less precise)
+        tip_weight: how much to trust the tip (default 0.75)
+            1.0 = pure tip (precise but jittery)
+            0.5 = 50/50 blend (very stable but less precise)
         """
         if landmarks is None:
             return None
@@ -155,9 +148,9 @@ class HandTracker:
         """
         Returns [thumb, index, middle, ring, pinky] booleans.
 
-        Thumb uses **handedness-aware X-axis comparison** so it works
+        Thumb uses handedness-aware X-axis comparison so it works
         correctly for both left and right hands (after mirror flip).
-        Other fingers use Y-axis (tip above PIP *and* MCP) with a
+        Other fingers use Y-axis (tip above PIP and MCP) with a
         small tolerance margin to reduce flicker.
         """
         if landmarks is None:
@@ -171,12 +164,11 @@ class HandTracker:
                 self.RING_MCP, self.PINKY_MCP]
 
         # Tolerance: a few pixels of margin to prevent flickering
-        # at the boundary between "up" and "down"
-        TOLERANCE = 4  # pixels
+        TOLERANCE = 4
 
         up = []
         for i, (tip_id, pip_id, mcp_id) in enumerate(zip(tips, pips, mcps)):
-            if i == 0:  # Thumb – X axis, handedness-aware
+            if i == 0:  # Thumb - X axis, handedness-aware
                 if self._handedness == "Right":
                     up.append(landmarks[tip_id][0] < landmarks[pip_id][0] - TOLERANCE)
                 else:
